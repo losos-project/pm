@@ -213,6 +213,129 @@ interface types {
         files: list<launch-file>,
     }
 
+    /// How a disk image is laid out.
+    enum disk-format {
+        /// The disk's bytes, one for one.
+        raw,
+        /// QEMU's copy-on-write format, which can sit on top of another image.
+        qcow2,
+    }
+
+    /// What a machine's firmware is.
+    enum firmware {
+        /// UEFI, from the host's OVMF (AAVMF on arm64), without Secure Boot: the
+        /// template's own boot loader starts it, signed or not.
+        uefi,
+        /// A legacy PC BIOS, from SeaBIOS. x86-64 only.
+        bios,
+    }
+
+    /// The image a machine is made from, already on this host.
+    ///
+    /// A template is installed once and every machine made from it is a
+    /// copy-on-write layer on top, so it must never change once installed: its name
+    /// carries `digest` for that reason, and a different image under the same name is
+    /// a different template.
+    record machine-template {
+        /// What it is called: the package's name, or the image's file name. 1-64
+        /// characters of `[a-z0-9]`, `.`, `_` and `-`.
+        name: string,
+        /// The image's SHA-256, in lowercase hex.
+        digest: string,
+        /// The image file, readable by whoever runs pm.
+        image: string,
+        /// How `image` is laid out.
+        format: disk-format,
+        /// The image file's length in bytes: what has to be uploaded.
+        file-size: u64,
+        /// The size of the disk the image describes, in bytes: its length for a raw
+        /// image, the size in its header for a qcow2 one. A machine's disk is never
+        /// smaller.
+        disk-size: u64,
+        /// The firmware the image boots with.
+        firmware: firmware,
+    }
+
+    /// The colour a machine's windows are framed in, so which machine a window
+    /// belongs to is visible at a glance. Qubes OS's eight.
+    enum machine-label {
+        red,
+        orange,
+        yellow,
+        green,
+        gray,
+        blue,
+        purple,
+        black,
+    }
+
+    /// A machine to make.
+    record machine-spec {
+        /// What it is called, which is also how every later request names it. 1-32
+        /// characters of `[a-z0-9]` and `-`, starting with a letter.
+        name: string,
+        /// The colour its windows are framed in.
+        label: machine-label,
+        /// What its disk starts from.
+        template: machine-template,
+        /// The size of its disk, in bytes; never less than the template's.
+        disk-size: u64,
+        /// Memory, in MiB.
+        memory-mib: u64,
+        /// Virtual CPUs.
+        cpus: u32,
+        /// Whether the host has KVM. A machine without it is emulated, slowly.
+        kvm: bool,
+        /// The host's architecture, as Rust spells it: `x86_64` or `aarch64`. The
+        /// machine is the same.
+        arch: string,
+    }
+
+    /// Something to do to the host's machines.
+    variant machine-request {
+        /// Install the template if it is not installed yet, and make a machine from
+        /// it. The machine is left stopped.
+        create(machine-spec),
+        /// Print every machine, to pm's standard output.
+        %list,
+        /// Start the named machine, unless it runs already.
+        start(string),
+        /// Ask the named machine's guest to shut down, if it runs.
+        stop(string),
+        /// Power the named machine off at once, if it runs.
+        kill(string),
+        /// Power the named machine off if it runs, and delete it and its disk. Its
+        /// template stays.
+        remove(string),
+    }
+
+    /// One thing to run for a request.
+    ///
+    /// pm runs a request's steps in order and stops at the first that fails. It
+    /// evaluates every step's conditions before it runs the first one, so the plan is
+    /// fixed by the state the host was in when the request was made, not by what the
+    /// earlier steps have already changed. When a step fails, pm runs the `undo` of
+    /// every step that had finished, newest first. Never the failed step's own: a
+    /// step that failed is taken to have changed nothing, and its undo could take
+    /// away something that was there before the request - a disk that made the step
+    /// fail by existing already, say.
+    ///
+    /// Every launch here, conditions and undos included, is held to `launchers`, runs
+    /// with pm's standard output and error (the conditions with neither), and has its
+    /// files written to a directory private to the request.
+    record machine-step {
+        /// One line saying what the step does, for pm's log.
+        summary: string,
+        /// What to run.
+        run: launch,
+        /// Run the step only if this exits successfully.
+        when: option<launch>,
+        /// Skip the step if this exits successfully.
+        unless: option<launch>,
+        /// How to take the step back if a later one fails.
+        undo: option<launch>,
+    }
+
     /// A hook a plugin implements.
     ///
     /// pm calls a hook only if the manifest lists it. The exports are all
@@ -362,4 +485,21 @@ world vm-plugin {
     /// How to start `machine`, or `none` to leave it to the next plugin, and in the
     /// end to pm's own QEMU. An error fails the boot with the plugin's message.
     export launch-machine: func(machine: machine) -> result<option<launch>, string>;
+}
+
+/// The world of a plugin that manages the host's persistent virtual machines, for
+/// `pm machine`.
+///
+/// Everything `vm-plugin` exports, plus the one call that turns a request into the
+/// steps that carry it out. The plugin decides what to run and pm runs it, held to
+/// the same `launchers` a `vm-plugin` is: the plugin still reaches nothing, and the
+/// most it can make pm execute is still what `pm plugins` printed.
+world machine-plugin {
+    include vm-plugin;
+
+    use types.{machine-request, machine-step};
+
+    /// The steps that carry `request` out, in order. An error refuses the request
+    /// with the plugin's message, before anything runs.
+    export machine-steps: func(request: machine-request) -> result<list<machine-step>, string>;
 }

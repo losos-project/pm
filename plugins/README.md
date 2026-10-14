@@ -201,6 +201,44 @@ has to be handed each file, which is what libvirt does. `libvirt/` is the
 example: one launcher, `virsh`, and a transient domain started with
 `virsh create --console --autodestroy`. `pm run --qemu` asks no plugin.
 
+## Managing machines
+
+A plugin built against the **`machine-plugin`** world manages the host's
+persistent virtual machines for `pm machine`. It is a `vm-plugin` - the same
+`launchers`, printed by `pm plugins` with `machines: yes` - plus one call:
+
+```wit
+export machine-steps: func(request: machine-request) -> result<list<machine-step>, string>;
+```
+
+A request is `create(machine-spec)`, `list`, or `start`, `stop`, `kill` or
+`remove` of a machine by name; the spec carries the name, the label, the
+template (its name, digest, image path, format, file and disk sizes, firmware),
+the disk size, memory, CPUs, whether the host has KVM and its architecture. The
+answer is the steps that carry the request out. Each step is a launch, held to
+`launchers` like a machine's, with three optional launches beside it:
+
+* `when` - run the step only if this exits successfully;
+* `unless` - skip the step if this exits successfully;
+* `undo` - how to take the step back.
+
+pm runs every condition first, before any step, so the plan is fixed by the state
+the host was in when the request was made, and a question asked by several steps
+is asked once. The steps then run in order with pm's standard output and error,
+each in a directory of its own private to the user holding the files it asked
+for, which its arguments name by their bare names. The first failure stops the
+request and runs the `undo` of every step that had finished, newest first; not
+the failed step's, which is taken to have changed nothing. Only the first plugin
+that manages machines is asked: every request about a machine has to reach the
+hypervisor that made it.
+
+`libvirt/` is the example. Its steps install the template as a volume in the
+`default` pool unless a volume of its name is there (`vol-create-as`,
+`vol-upload`, `pool-refresh`, all skipped together), make the machine's qcow2
+disk on top of it, and `define` a persistent domain; `remove` powers the machine
+off if it runs and `undefine`s it with its disk and UEFI variables, leaving the
+template.
+
 ## Trust
 
 **A plugin must be signed**, by a key in the same trust store that governs build
@@ -283,7 +321,7 @@ Rust-specific; Rust is simply what these examples are written in.
 | `systemd/`    | classifies systemd tooling, reads unit files, publishes the install dirs  |
 | `sysupdate/`  | classifies `systemd-sysupdate` and reads its transfer definitions         |
 | `sysext/`     | classifies the system-extension image toolchain; one hook, on purpose     |
-| `libvirt/`    | boots a package's own kernel as a libvirt machine, through `virsh`        |
+| `libvirt/`    | boots a package's kernel and manages `pm machine`s in libvirt, via `virsh` |
 | `unitfile/`   | the unit-file parser the three systemd plugins share - an ordinary lib    |
 | `encoder/`    | core module → component, so `build.sh` needs no `cargo install`           |
 | `fixtures/*`  | deliberately badly behaved plugins, for `tests/plugins.rs`                |

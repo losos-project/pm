@@ -675,7 +675,9 @@ fn resolve_inside(root: &Path, relative: &Path) -> miette::Result<PathBuf> {
     Ok(resolved)
 }
 
-fn find_on_path(program: &str) -> Option<PathBuf> {
+/// `program` as the first regular file of that name in a `PATH` directory, the way a
+/// shell finds it.
+pub fn find_on_path(program: &str) -> Option<PathBuf> {
     env::split_paths(&env::var_os("PATH")?)
         .map(|dir| dir.join(program))
         .find(|candidate| candidate.is_file())

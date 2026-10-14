@@ -334,7 +334,14 @@ fn resolve(launch: &Launch) -> miette::Result<PathBuf> {
 
 /// Write `file` into `directory`, private to its owner, refusing a name that is
 /// not plain or that is already taken by the machine's own files.
-fn write_file(directory: &Path, file: &LaunchFile) -> miette::Result<()> {
+///
+/// Public for `pm machine`, whose steps write their files the same way.
+///
+/// # Errors
+///
+/// The name is not plain, a file of that name exists already, or it cannot be
+/// written.
+pub fn write_file(directory: &Path, file: &LaunchFile) -> miette::Result<()> {
     let plain = !file.name.is_empty()
         && !file.name.starts_with('.')
         && file

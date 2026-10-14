@@ -158,6 +158,39 @@ running it in the namespace jail on the host's kernel:
 Install `pm-vm-init` beside `pm`: it is copied into every initramfs, and is
 much smaller than `pm`, which is used in its place when it is missing.
 
+## Machines
+
+`pm machine` keeps virtual machines that outlive any one command: each is made
+from a *template*, a disk image, and gets a copy-on-write disk of its own on top
+of it, so any number of machines share one template's space.
+
+```sh
+pm machine create work --image guest.qcow2 --label blue   # left stopped
+pm machine start work
+pm machine list
+pm machine stop work        # asks the guest to shut down
+pm machine kill work        # pulls the plug
+pm machine remove work      # the machine and its disk; the template stays
+```
+
+A template is the image's bytes: pm reads the image once for its SHA-256, and the
+same name with different bytes is a new template beside the old one, so the
+machines made from the old one keep their base. `--image` takes raw and qcow2;
+the disk is never smaller than the template's. `--label` is the colour a desktop
+frames the machine's windows in (red, orange, yellow, green, gray, blue, purple
+or black); `--memory`, `--cpus`, `--disk` and `--firmware` (uefi, the default,
+or bios) size and boot it.
+
+pm does none of this itself. The first installed plugin built against the
+`machine-plugin` world turns each request into steps and pm runs them, held to
+the programs the plugin listed at load - see "Managing machines" in
+`plugins/README.md`. The `libvirt` plugin (`plugins/libvirt/`) makes them
+libvirt's: the template becomes a volume in the `default` storage pool, the
+machine a persistent domain on the `default` network with its label in its
+`<metadata>`, a vsock device and a QEMU guest agent channel. virsh and
+virt-manager see the same machines. Names are 1-32 characters of `a-z`, `0-9`
+and `-`, starting with a letter, checked before any plugin sees them.
+
 ## Integration with distribution build tools
 
 Projects such as `dichhead/losos-desktop` generate recipes and assemble system
