@@ -2,6 +2,10 @@ use clap::{Parser, Subcommand};
 use miette::{IntoDiagnostic, WrapErr, miette};
 use pm::{
     bf::{BuildFile, BuildOptions},
+    machine::{
+        Firmware, Label, Request as MachineRequest, Spec, Template, carry_out, check_machine_name,
+        host_has_kvm,
+    },
     metadata::Metadata,
     migrate,
     perms::Enforcement,
@@ -408,6 +412,17 @@ enum Commands {
         #[arg(long)]
         digests: bool,
     },
+    /// Make, list, start, stop and remove the host's virtual machines.
+    ///
+    /// A machine is made from a template - a disk image - and gets a copy-on-write
+    /// disk of its own on top of it, so any number of machines share one template's
+    /// space. Each has a label, the colour a desktop frames its windows in. pm does
+    /// none of this itself: the first installed plugin that manages machines, such
+    /// as libvirt, decides what to run, and pm runs it.
+    Machine {
+        #[command(subcommand)]
+        command: MachineCommand,
+    },
     /// Accept signatures made by a public key from now on.
     ///
     /// Takes the key as hex, or the path to a file holding it - either a `.pub`
@@ -419,6 +434,66 @@ enum Commands {
         /// Trust store to add the key to.
         #[arg(long, value_name = "DIR")]
         trust_dir: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum MachineCommand {
+    /// Make a machine from a template, and leave it stopped.
+    ///
+    /// The template is installed first, once: every later machine made from the
+    /// same image reuses it. An image is the same template only if it has the same
+    /// bytes, so a changed image under the same name is installed beside the old
+    /// one, and the machines made from the old one keep it.
+    Create {
+        /// What to call the machine: 1-32 characters of a-z, 0-9 and `-`,
+        /// starting with a letter.
+        name: String,
+        /// The template's disk image, raw or qcow2.
+        #[arg(long, value_name = "PATH")]
+        image: PathBuf,
+        /// What to call the template. Defaults to the image's file name.
+        #[arg(long, value_name = "NAME")]
+        template_name: Option<String>,
+        /// The firmware the template boots with: uefi or bios.
+        #[arg(long, default_value = "uefi")]
+        firmware: Firmware,
+        /// The colour the machine's windows are framed in: red, orange, yellow,
+        /// green, gray, blue, purple or black.
+        #[arg(long, default_value = "gray")]
+        label: Label,
+        /// Memory, in MiB.
+        #[arg(long, value_name = "MIB", default_value_t = 2048)]
+        memory: u64,
+        /// Virtual CPUs.
+        #[arg(long, value_name = "N", default_value_t = 2)]
+        cpus: u32,
+        /// The size of the machine's disk, in GiB. Never smaller than the
+        /// template's disk, whatever this says.
+        #[arg(long, value_name = "GIB", default_value_t = 32)]
+        disk: u64,
+    },
+    /// List the host's machines.
+    List,
+    /// Start a machine.
+    Start {
+        /// The machine's name.
+        name: String,
+    },
+    /// Ask a machine to shut down, as its power button would.
+    Stop {
+        /// The machine's name.
+        name: String,
+    },
+    /// Power a machine off at once, as pulling its plug would.
+    Kill {
+        /// The machine's name.
+        name: String,
+    },
+    /// Power a machine off and delete it and its disk. Its template stays.
+    Remove {
+        /// The machine's name.
+        name: String,
     },
 }
 
@@ -578,9 +653,64 @@ fn main() -> miette::Result<()> {
             trust_dir,
         } => promote(&package, no_sign, unsigned, key, trust_dir)?,
         Commands::Trust { key, trust_dir } => trust(&key, trust_dir)?,
+        Commands::Machine { command } => machine(command, &plugin_args.load()?)?,
     }
 
     Ok(())
+}
+
+/// Carries out a `pm machine` subcommand through the plugin that manages machines.
+///
+/// # Errors
+///
+/// A name is not usable, the image cannot be read, no plugin manages machines, or a
+/// step failed.
+fn machine(command: MachineCommand, plugins: &Registry) -> miette::Result<()> {
+    let request = match command {
+        MachineCommand::Create {
+            name,
+            image,
+            template_name,
+            firmware,
+            label,
+            memory,
+            cpus,
+            disk,
+        } => {
+            check_machine_name(&name)?;
+            if memory == 0 || cpus == 0 {
+                return Err(miette!("a machine needs some memory and at least one CPU"));
+            }
+            let template = Template::from_image(&image, template_name.as_deref(), firmware)?;
+            let disk_size = disk
+                .checked_mul(1 << 30)
+                .ok_or_else(|| miette!("{disk} GiB is more disk than there is"))?
+                .max(template.disk_size);
+            MachineRequest::Create(Spec {
+                name,
+                label,
+                template,
+                disk_size,
+                memory_mib: memory,
+                cpus,
+                kvm: host_has_kvm(),
+                arch: std::env::consts::ARCH.to_owned(),
+            })
+        }
+        MachineCommand::List => MachineRequest::List,
+        MachineCommand::Start { name } => MachineRequest::Start(checked(name)?),
+        MachineCommand::Stop { name } => MachineRequest::Stop(checked(name)?),
+        MachineCommand::Kill { name } => MachineRequest::Kill(checked(name)?),
+        MachineCommand::Remove { name } => MachineRequest::Remove(checked(name)?),
+    };
+    carry_out(plugins, &request)
+}
+
+/// `name`, if it can name a machine. Checked before a plugin sees it, so that no
+/// plugin has to be trusted to quote it.
+fn checked(name: String) -> miette::Result<String> {
+    check_machine_name(&name)?;
+    Ok(name)
 }
 
 /// Derives the policy from `file`, then builds and packages it.
@@ -781,6 +911,9 @@ fn list_plugins(plugins: &Registry, digests: bool) -> miette::Result<()> {
                 "launchers:",
                 comma_join(manifest.launchers.iter().cloned())
             );
+        }
+        if manifest.manages_machines {
+            println!("{:<LABEL_WIDTH$}yes", "machines:");
         }
         println!("{:<LABEL_WIDTH$}{}", "file:", plugin.path().display());
         if digests {

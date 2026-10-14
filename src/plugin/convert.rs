@@ -22,11 +22,13 @@ use tracing::warn;
 use super::{
     Hook, Manifest, RecipeFunction, RecipeValue, Symbol,
     wit::{
-        WitCapability, WitGrant, WitHook, WitLaunch, WitMachine, WitManifest, WitPermission,
-        WitRecipeFunction, WitRecipeValue, WitSymbol, WitVerdict,
+        WitCapability, WitDiskFormat, WitFirmware, WitGrant, WitHook, WitLaunch, WitMachine,
+        WitMachineLabel, WitMachineRequest, WitMachineSpec, WitMachineStep, WitMachineTemplate,
+        WitManifest, WitPermission, WitRecipeFunction, WitRecipeValue, WitSymbol, WitVerdict,
     },
 };
 use crate::{
+    machine::{DiskFormat, Firmware, Label, Request, Spec, Step, Template},
     perms::{Grant, Permission, Provenance},
     policy::Capability,
 };
@@ -148,6 +150,7 @@ pub(super) fn manifest(from: WitManifest, file: &str) -> Result<Manifest, String
         symbols,
         recipe_functions: BTreeMap::new(),
         launchers: BTreeSet::new(),
+        manages_machines: false,
     })
 }
 
@@ -592,4 +595,82 @@ fn clip(text: String, max: usize) -> String {
     let mut out: String = text.chars().take(max.saturating_sub(1)).collect();
     out.push('…');
     out
+}
+
+/// A request about the host's machines as the `machine-plugin` world spells it.
+pub(super) fn machine_request(from: &Request) -> WitMachineRequest {
+    match from {
+        Request::Create(spec) => WitMachineRequest::Create(machine_spec(spec)),
+        Request::List => WitMachineRequest::List,
+        Request::Start(name) => WitMachineRequest::Start(name.clone()),
+        Request::Stop(name) => WitMachineRequest::Stop(name.clone()),
+        Request::Kill(name) => WitMachineRequest::Kill(name.clone()),
+        Request::Remove(name) => WitMachineRequest::Remove(name.clone()),
+    }
+}
+
+fn machine_spec(from: &Spec) -> WitMachineSpec {
+    WitMachineSpec {
+        name: from.name.clone(),
+        label: match from.label {
+            Label::Red => WitMachineLabel::Red,
+            Label::Orange => WitMachineLabel::Orange,
+            Label::Yellow => WitMachineLabel::Yellow,
+            Label::Green => WitMachineLabel::Green,
+            Label::Gray => WitMachineLabel::Gray,
+            Label::Blue => WitMachineLabel::Blue,
+            Label::Purple => WitMachineLabel::Purple,
+            Label::Black => WitMachineLabel::Black,
+        },
+        template: machine_template(&from.template),
+        disk_size: from.disk_size,
+        memory_mib: from.memory_mib,
+        cpus: from.cpus,
+        kvm: from.kvm,
+        arch: from.arch.clone(),
+    }
+}
+
+fn machine_template(from: &Template) -> WitMachineTemplate {
+    WitMachineTemplate {
+        name: from.name.clone(),
+        digest: from.digest.clone(),
+        image: from.image.to_string_lossy().into_owned(),
+        format: match from.format {
+            DiskFormat::Raw => WitDiskFormat::Raw,
+            DiskFormat::Qcow2 => WitDiskFormat::Qcow2,
+        },
+        file_size: from.file_size,
+        disk_size: from.disk_size,
+        firmware: match from.firmware {
+            Firmware::Uefi => WitFirmware::Uefi,
+            Firmware::Bios => WitFirmware::Bios,
+        },
+    }
+}
+
+/// A plugin's steps for a request, every launch in them checked against the programs
+/// it listed, as a machine's launch is.
+///
+/// # Errors
+///
+/// A step names a program outside `launchers`, or an argument with a NUL byte.
+pub(super) fn machine_steps(
+    from: Vec<WitMachineStep>,
+    plugin: &str,
+    launchers: &BTreeSet<String>,
+) -> std::result::Result<Vec<Step>, String> {
+    let check = |launched: WitLaunch| launch(launched, plugin, launchers);
+    let optional = |launched: Option<WitLaunch>| launched.map(check).transpose();
+    from.into_iter()
+        .map(|step| {
+            Ok(Step {
+                summary: clip(step.summary, SUMMARY_MAX),
+                run: check(step.run)?,
+                when: optional(step.when)?,
+                unless: optional(step.unless)?,
+                undo: optional(step.undo)?,
+            })
+        })
+        .collect()
 }

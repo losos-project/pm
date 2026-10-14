@@ -20,6 +20,8 @@ pub mod daemon;
 pub use pm_download as download;
 /// Resolving a build file's dependency graph, and building it.
 pub mod graph;
+/// The host's persistent virtual machines, made from templates, for `pm machine`.
+pub mod machine;
 /// Package metadata written into each archive.
 pub mod metadata;
 /// Converting YAML and Starlark build files to Rhai recipes.

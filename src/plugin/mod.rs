@@ -227,6 +227,11 @@ pub struct Manifest {
     /// program outside this set is refused, so what a plugin can make pm execute is
     /// fixed at load and printed by `pm plugins`, not decided per call.
     pub launchers: BTreeSet<String>,
+    /// Whether the plugin manages the host's persistent machines for `pm machine`.
+    ///
+    /// Only a plugin built against the `machine-plugin` world does. What it may run
+    /// for that is still exactly [`Manifest::launchers`].
+    pub manages_machines: bool,
 }
 
 /// What a [`RecipeFunction`] returns, which decides what a recipe receives.
@@ -955,6 +960,47 @@ impl pm_vm::Launcher for Registry {
     }
 }
 
+/// A registry manages the host's machines through its first `machine-plugin` plugin.
+///
+/// Only the first: unlike booting a package, where a plugin may decline and leave the
+/// machine to the next, every request about the same machine has to reach the same
+/// hypervisor, or `pm machine start` could look for a machine where `pm machine
+/// create` never put it.
+impl crate::machine::Manager for Registry {
+    fn steps(&self, request: &crate::machine::Request) -> Result<Vec<crate::machine::Step>> {
+        let plugin = self.runtime.as_ref().zip(
+            self.plugins
+                .iter()
+                .find(|plugin| plugin.manifest.manages_machines),
+        );
+        let Some((runtime, plugin)) = plugin else {
+            return Err(miette!(
+                help = "install and sign a plugin that does, such as pm's libvirt plugin \
+                        (plugins/README.md, \"Managing machines\")",
+                "no plugin manages machines here, so pm cannot {}",
+                request.describe()
+            ));
+        };
+        let name = &plugin.manifest.name;
+        let offered = convert::machine_request(request);
+        let answer = runtime
+            .enter_machine(name, &plugin.component, |bindings, store| {
+                bindings.call_machine_steps(store, &offered)
+            })
+            .wrap_err_with(|| format!("the plugin {name} could not {}", request.describe()))?
+            .map_err(|message| {
+                miette!(
+                    "the plugin {name} refused to {}: {message}",
+                    request.describe()
+                )
+            })?;
+        let steps = convert::machine_steps(answer, name, &plugin.manifest.launchers)
+            .map_err(|reason| miette!("{reason}"))?;
+        debug!(plugin = %name, steps = steps.len(), "a plugin planned the request");
+        Ok(steps)
+    }
+}
+
 fn classify_one(
     runtime: &Runtime,
     plugin: &Plugin,
@@ -1117,6 +1163,7 @@ fn load_one(runtime: &Runtime, path: &Path, trust: Option<&TrustStore>) -> Resul
             })
             .wrap_err_with(|| format!("the plugin {file} could not list its launchers"))?;
         manifest.launchers = convert::launchers(offered, &manifest.name);
+        manifest.manages_machines = Runtime::has_machine_steps(&component);
     }
 
     Ok(Plugin {
