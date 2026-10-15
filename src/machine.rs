@@ -216,25 +216,9 @@ impl Template {
             (DiskFormat::Raw, file_size)
         };
 
-        let mut context = Context::new(&SHA256);
-        context.update(&header[..read]);
-        let mut buffer = vec![0u8; 1 << 20];
-        loop {
-            let n = file
-                .read(&mut buffer)
-                .into_diagnostic()
-                .wrap_err_with(|| format!("cannot read the image {}", image.display()))?;
-            if n == 0 {
-                break;
-            }
-            context.update(&buffer[..n]);
-        }
-        let digest = context
-            .finish()
-            .as_ref()
-            .iter()
-            .map(|byte| format!("{byte:02x}"))
-            .collect();
+        let digest = digest_of(&mut file, &header[..read])
+            .into_diagnostic()
+            .wrap_err_with(|| format!("cannot read the image {}", image.display()))?;
 
         let name = match name {
             Some(name) => name.to_owned(),
@@ -252,6 +236,123 @@ impl Template {
             firmware,
         })
     }
+}
+
+/// The SHA-256 of `start` followed by the rest of `file`, in lowercase hex.
+fn digest_of(file: &mut File, start: &[u8]) -> io::Result<String> {
+    let mut context = Context::new(&SHA256);
+    context.update(start);
+    let mut buffer = vec![0u8; 1 << 20];
+    loop {
+        let n = file.read(&mut buffer)?;
+        if n == 0 {
+            break;
+        }
+        context.update(&buffer[..n]);
+    }
+    Ok(context
+        .finish()
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
+}
+
+/// What runs in a machine that installs its own system from CDs. It decides the
+/// devices the machine gets: a guest that cannot send its windows to the host's
+/// desktop over vsock, as Windows cannot, gets a screen instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum System {
+    /// Linux, or anything else that brings its own virtio drivers.
+    #[default]
+    Linux,
+    /// Windows, which needs virtio's drivers from a CD of their own, Hyper-V's
+    /// enlightenments and a TPM, and has no waypipe.
+    Windows,
+}
+
+impl System {
+    /// The system's name, as `--system` takes it.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Linux => "linux",
+            Self::Windows => "windows",
+        }
+    }
+}
+
+impl FromStr for System {
+    type Err = String;
+
+    fn from_str(name: &str) -> Result<Self, Self::Err> {
+        match name {
+            "linux" => Ok(Self::Linux),
+            "windows" => Ok(Self::Windows),
+            _ => Err(format!("`{name}` is not a system; linux or windows")),
+        }
+    }
+}
+
+/// A CD a machine starts with - an installer, or the drivers it needs - already on
+/// this host. Installed once, like a template, and shared by every machine that
+/// starts with the same bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Media {
+    /// What it is called: its file's name, as a template is named.
+    pub name: String,
+    /// The image's SHA-256, in lowercase hex.
+    pub digest: String,
+    /// The image file.
+    pub image: PathBuf,
+    /// The image file's length in bytes.
+    pub file_size: u64,
+}
+
+impl Media {
+    /// The CD `image` is. Reads the whole image once, for its digest.
+    ///
+    /// # Errors
+    ///
+    /// The image cannot be read, or its file's name makes no usable name.
+    pub fn from_image(image: &Path) -> miette::Result<Self> {
+        let image = image
+            .canonicalize()
+            .into_diagnostic()
+            .wrap_err_with(|| format!("cannot find the CD image {}", image.display()))?;
+        let mut file = File::open(&image)
+            .into_diagnostic()
+            .wrap_err_with(|| format!("cannot open the CD image {}", image.display()))?;
+        let file_size = file.metadata().into_diagnostic()?.len();
+        let digest = digest_of(&mut file, &[])
+            .into_diagnostic()
+            .wrap_err_with(|| format!("cannot read the CD image {}", image.display()))?;
+        let name = name_of_image(&image);
+        check_template_name(&name)
+            .wrap_err_with(|| format!("rename {} to use it", image.display()))?;
+        Ok(Self {
+            name,
+            digest,
+            image,
+            file_size,
+        })
+    }
+}
+
+/// What a machine's disk starts as.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Source {
+    /// A copy-on-write layer over a template, ready to boot.
+    Template(Template),
+    /// Empty, with CDs to install `system` from: the machine boots the first
+    /// once its disk has nothing to boot, and keeps them all until its owner
+    /// takes them out.
+    Installer {
+        /// What it installs.
+        system: System,
+        /// The CDs, the one it boots from first.
+        media: Vec<Media>,
+    },
 }
 
 /// Fill as much of `buffer` as `file` holds, which is less only at its end.
@@ -273,7 +374,7 @@ fn name_of_image(image: &Path) -> String {
         .file_name()
         .map(|name| name.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    let stem = [".qcow2", ".raw", ".img"]
+    let stem = [".qcow2", ".raw", ".img", ".iso"]
         .into_iter()
         .find_map(|extension| file.strip_suffix(extension))
         .unwrap_or(&file);
@@ -340,8 +441,8 @@ pub struct Spec {
     /// The colour its windows are framed in.
     pub label: Label,
     /// What its disk starts from.
-    pub template: Template,
-    /// The size of its disk, in bytes; never less than the template's.
+    pub source: Source,
+    /// The size of its disk, in bytes; never less than a template's.
     pub disk_size: u64,
     /// Memory, in MiB.
     pub memory_mib: u64,
@@ -356,8 +457,8 @@ pub struct Spec {
 /// Something to do to the host's machines.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
-    /// Install the template unless it is installed, and make a stopped machine from
-    /// it.
+    /// Install the template or CDs unless they are installed, and make a stopped
+    /// machine from them.
     Create(Spec),
     /// Print every machine.
     List,
@@ -574,6 +675,33 @@ pub fn host_has_kvm() -> bool {
     Path::new("/dev/kvm").exists()
 }
 
+/// Where a host's packages put the CD a machine installing `system` is given
+/// after its own: `pm/machines/<system>-tools.iso` under one of the XDG data
+/// directories.
+#[must_use]
+pub fn guest_tools_path(system: System) -> String {
+    format!("pm/machines/{}-tools.iso", system.name())
+}
+
+/// The CD of guest tools the host's packages installed for machines that install
+/// `system`: the first [`guest_tools_path`] under `$XDG_DATA_DIRS`, or under the
+/// specification's own default directories when that is unset.
+///
+/// What is on it is the host's business, because it is what makes a guest fit
+/// the host's desktop: for Windows the virtio drivers Setup has none of and the
+/// answer file that loads them, for Linux what sends a distribution's windows to
+/// the desktop. pm knows only where to look.
+#[must_use]
+pub fn guest_tools(system: System) -> Option<PathBuf> {
+    let dirs = std::env::var_os("XDG_DATA_DIRS")
+        .filter(|dirs| !dirs.is_empty())
+        .unwrap_or_else(|| "/usr/local/share:/usr/share".into());
+    let path = guest_tools_path(system);
+    std::env::split_paths(&dirs)
+        .map(|dir| dir.join(&path))
+        .find(|cd| cd.is_file())
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::Write;
@@ -651,6 +779,26 @@ mod tests {
         ] {
             assert!(check_machine_name(bad).is_err(), "{bad:?}");
         }
+    }
+
+    #[test]
+    fn a_cd_is_named_after_its_file_and_known_by_its_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("Win11_24H2_English_x64.iso");
+        fs::write(&path, [1u8; 2048]).unwrap();
+        let media = Media::from_image(&path).unwrap();
+        assert_eq!(media.name, "win11_24h2_english_x64");
+        assert_eq!(media.file_size, 2048);
+        assert_eq!(media.digest.len(), 64);
+        assert!(Media::from_image(&dir.path().join("missing.iso")).is_err());
+    }
+
+    #[test]
+    fn systems_round_trip() {
+        for system in [System::Linux, System::Windows] {
+            assert_eq!(system.name().parse::<System>(), Ok(system));
+        }
+        assert!("macos".parse::<System>().is_err());
     }
 
     #[test]

@@ -56,7 +56,7 @@ impl Host {
     fn new() -> Self {
         let root = tempdir().expect("a temporary directory");
         let path = root.path();
-        for dir in ["bin", "plugins", "state"] {
+        for dir in ["bin", "plugins", "state", "share/pm/machines"] {
             create_dir_all(path.join(dir)).expect("make the host's directories");
         }
         fs::copy(
@@ -68,6 +68,7 @@ impl Host {
         write(&virsh, FAKE_VIRSH).expect("write the stand-in virsh");
         set_permissions(&virsh, fs::Permissions::from_mode(0o755)).expect("make it executable");
         write(path.join("Guest.img"), [0u8; 4096]).expect("write a template image");
+        write(path.join("Win11.iso"), [1u8; 4096]).expect("write an installer CD");
         write(path.join("log"), "").expect("start the log");
         Self { root }
     }
@@ -91,6 +92,9 @@ impl Host {
             .env("PATH", path)
             .env("LOG", self.path("log"))
             .env("STATE", self.path("state"))
+            // Where the host's CDs of guest tools are looked for: here, so the
+            // runner's own never answer.
+            .env("XDG_DATA_DIRS", self.path("share"))
             .env_remove("FAIL");
         if let Some(fail) = fail {
             command.env("FAIL", fail);
@@ -286,13 +290,122 @@ fn start_stop_and_remove_follow_the_machine_state() {
         [
             "domjobinfo work",
             "destroy work",
-            "undefine work --nvram --remove-all-storage"
+            "undefine work --nvram --storage vda"
         ]
     );
     assert!(!host.state("domain-work"));
     assert!(!host.state("vol-pm-machine-work.qcow2"));
     // The template stays for the next machine.
     template_volume(&host);
+}
+
+#[test]
+fn a_windows_machine_installs_from_its_cd_and_the_hosts_drivers() {
+    let host = Host::new();
+    let win11 = host.path("Win11.iso");
+    let args = [
+        "machine",
+        "create",
+        "win",
+        "--installer",
+        win11.to_str().unwrap(),
+        "--system",
+        "windows",
+        "--label",
+        "red",
+    ];
+    // Without the host's drivers CD, Windows Setup would find no disk to install
+    // on, so pm stops before asking anything of libvirt.
+    let output = host.pm(&args, None);
+    assert!(!output.status.success());
+    let error = String::from_utf8_lossy(&output.stderr);
+    // miette wraps the message to the terminal's width, anywhere.
+    assert!(error.contains("windows-tools.iso"), "{error}");
+    assert!(host.calls().is_empty());
+
+    write(
+        host.path("share/pm/machines/windows-tools.iso"),
+        [2u8; 4096],
+    )
+    .expect("install the host's drivers CD");
+    host.ok(&args);
+    let calls = host.calls();
+    let uploads: Vec<&str> = calls
+        .iter()
+        .filter_map(|call| call.strip_prefix("vol-upload --pool default "))
+        .collect();
+    assert_eq!(uploads.len(), 2, "{calls:?}");
+    assert!(uploads[0].starts_with("pm-media-win11-"), "{uploads:?}");
+    assert!(
+        uploads[1].starts_with("pm-media-windows-tools-"),
+        "{uploads:?}"
+    );
+    // Windows 11's least: 64 GiB of disk, with nothing under it.
+    assert!(
+        calls.contains(
+            &"vol-create-as default pm-machine-win.qcow2 68719476736B --format qcow2".to_owned()
+        ),
+        "{calls:?}"
+    );
+    let domain = read_to_string(host.path("state/domain-win")).expect("the machine is defined");
+    for expected in [
+        "<memory unit='MiB'>4096</memory>",
+        "<pm:system>windows</pm:system>",
+        "<pm:label>red</pm:label>",
+        "<tpm model='tpm-crb'>",
+    ] {
+        assert!(domain.contains(expected), "{expected} in\n{domain}");
+    }
+
+    // A second machine from the same CDs uploads neither again, and removing
+    // one leaves them for the other.
+    let mut second = args;
+    second[2] = "win2";
+    host.ok(&second);
+    assert!(
+        !host
+            .calls()
+            .iter()
+            .any(|call| call.starts_with("vol-upload")),
+        "the CDs were uploaded again"
+    );
+    host.ok(&["machine", "remove", "win"]);
+    assert!(host.state("domain-win2"));
+    assert!(
+        fs::read_dir(host.path("state"))
+            .unwrap()
+            .filter(|entry| {
+                entry
+                    .as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("vol-pm-media-")
+            })
+            .count()
+            == 2
+    );
+}
+
+#[test]
+fn an_image_and_installer_cds_do_not_go_together() {
+    let host = Host::new();
+    let output = host.pm(
+        &[
+            "machine",
+            "create",
+            "work",
+            "--image",
+            host.path("Guest.img").to_str().unwrap(),
+            "--installer",
+            host.path("Win11.iso").to_str().unwrap(),
+        ],
+        None,
+    );
+    assert!(!output.status.success());
+    let output = host.pm(&["machine", "create", "work", "--system", "windows"], None);
+    assert!(!output.status.success());
+    assert!(host.calls().is_empty());
 }
 
 #[test]
