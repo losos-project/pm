@@ -1,4 +1,4 @@
-# tree-sitter-language 0.1.8, patched for pm's bundled plugins
+# tree-sitter-language 0.1.9, patched for pm's bundled plugins
 
 An unmodified copy of the published crate (MIT, see `LICENSE`) except for two things,
 both needed to build tree-sitter grammars for `wasm32-unknown-unknown` with tree-sitter

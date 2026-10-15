@@ -13,7 +13,7 @@
 edition = "2024"
 rust-version = "1.90"
 name = "tree-sitter-language"
-version = "0.1.8"
+version = "0.1.9"
 authors = [
     "Max Brunsfeld <maxbrunsfeld@gmail.com>",
     "Amaan Qureshi <amaanq12@gmail.com>",
@@ -52,6 +52,7 @@ cast_possible_wrap = "allow"
 cast_precision_loss = "allow"
 cast_sign_loss = "allow"
 dbg_macro = "deny"
+disallowed_methods = "deny"
 if_not_else = "allow"
 items_after_statements = "allow"
 missing_errors_doc = "allow"
