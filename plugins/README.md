@@ -212,9 +212,12 @@ export machine-steps: func(request: machine-request) -> result<list<machine-step
 ```
 
 A request is `create(machine-spec)`, `list`, or `start`, `stop`, `kill` or
-`remove` of a machine by name; the spec carries the name, the label, the
-template (its name, digest, image path, format, file and disk sizes, firmware),
-the disk size, memory, CPUs, whether the host has KVM and its architecture. The
+`remove` of a machine by name; the spec carries the name, the label, its
+source, the disk size, memory, CPUs, whether the host has KVM and its
+architecture. The source is a template (its name, digest, image path, format,
+file and disk sizes, firmware) or an installer: the system it installs, linux
+or windows, and its CDs (name, digest, image path and file size each), the
+host's CD of tools for that system last when there is one. The
 answer is the steps that carry the request out. Each step is a launch, held to
 `launchers` like a machine's, with three optional launches beside it:
 
@@ -235,9 +238,11 @@ hypervisor that made it.
 `libvirt/` is the example. Its steps install the template as a volume in the
 `default` pool unless a volume of its name is there (`vol-create-as`,
 `vol-upload`, `pool-refresh`, all skipped together), make the machine's qcow2
-disk on top of it, and `define` a persistent domain; `remove` powers the machine
-off if it runs and `undefine`s it with its disk and UEFI variables, leaving the
-template.
+disk on top of it, and `define` a persistent domain. An installer's CDs are
+installed the same way, each on its own, and its disk starts empty. `remove`
+powers the machine off if it runs and `undefine`s it with its own disk
+(`--storage vda`) and UEFI variables, leaving the template and the CDs other
+machines may share.
 
 ## Trust
 

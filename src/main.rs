@@ -3,8 +3,8 @@ use miette::{IntoDiagnostic, WrapErr, miette};
 use pm::{
     bf::{BuildFile, BuildOptions},
     machine::{
-        Firmware, Label, Request as MachineRequest, Spec, Template, carry_out, check_machine_name,
-        host_has_kvm,
+        Firmware, Label, Media, Request as MachineRequest, Source, Spec, System, Template,
+        carry_out, check_machine_name, guest_tools, guest_tools_path, host_has_kvm,
     },
     metadata::Metadata,
     migrate,
@@ -439,10 +439,11 @@ enum Commands {
 
 #[derive(Subcommand)]
 enum MachineCommand {
-    /// Make a machine from a template, and leave it stopped.
+    /// Make a machine from a template, or an empty one that installs a system
+    /// from CDs, and leave it stopped.
     ///
-    /// The template is installed first, once: every later machine made from the
-    /// same image reuses it. An image is the same template only if it has the same
+    /// The template or CDs are installed first, once: every later machine made
+    /// from the same image reuses it. An image is the same only if it has the same
     /// bytes, so a changed image under the same name is installed beside the old
     /// one, and the machines made from the old one keep it.
     Create {
@@ -450,28 +451,46 @@ enum MachineCommand {
         /// starting with a letter.
         name: String,
         /// The template's disk image, raw or qcow2.
-        #[arg(long, value_name = "PATH")]
-        image: PathBuf,
+        #[arg(long, value_name = "PATH", required_unless_present = "installer")]
+        image: Option<PathBuf>,
         /// What to call the template. Defaults to the image's file name.
-        #[arg(long, value_name = "NAME")]
+        #[arg(long, value_name = "NAME", requires = "image")]
         template_name: Option<String>,
-        /// The firmware the template boots with: uefi or bios.
-        #[arg(long, default_value = "uefi")]
+        /// The firmware the template boots with: uefi or bios. A machine that
+        /// installs from CDs boots UEFI.
+        #[arg(long, default_value = "uefi", conflicts_with = "installer")]
         firmware: Firmware,
+        /// A CD to install the machine's system from, instead of a template; the
+        /// machine starts with an empty disk and boots the first CD. Give it more
+        /// than once for more CDs.
+        #[arg(long, value_name = "PATH", conflicts_with = "image")]
+        installer: Vec<PathBuf>,
+        /// The system the CDs install: linux or windows. The machine is also
+        /// given the host's CD of tools for that system, after the others.
+        #[arg(long, default_value = "linux", requires = "installer")]
+        system: System,
+        /// The CD of tools for the system, instead of the host's
+        /// `pm/machines/<system>-tools.iso` under one of `$XDG_DATA_DIRS`.
+        /// Windows has no virtio drivers of its own and cannot install without
+        /// one; a Linux machine without one installs, and shows only its screen.
+        #[arg(long, value_name = "PATH", requires = "installer")]
+        tools: Option<PathBuf>,
         /// The colour the machine's windows are framed in: red, orange, yellow,
         /// green, gray, blue, purple or black.
         #[arg(long, default_value = "gray")]
         label: Label,
-        /// Memory, in MiB.
-        #[arg(long, value_name = "MIB", default_value_t = 2048)]
-        memory: u64,
+        /// Memory, in MiB. Defaults to 2048, or 4096 for Windows, which is
+        /// Windows 11's least.
+        #[arg(long, value_name = "MIB")]
+        memory: Option<u64>,
         /// Virtual CPUs.
         #[arg(long, value_name = "N", default_value_t = 2)]
         cpus: u32,
-        /// The size of the machine's disk, in GiB. Never smaller than the
+        /// The size of the machine's disk, in GiB. Defaults to 32, or 64 for
+        /// Windows, which is Windows 11's least. Never smaller than the
         /// template's disk, whatever this says.
-        #[arg(long, value_name = "GIB", default_value_t = 32)]
-        disk: u64,
+        #[arg(long, value_name = "GIB")]
+        disk: Option<u64>,
     },
     /// List the host's machines.
     List,
@@ -672,24 +691,54 @@ fn machine(command: MachineCommand, plugins: &Registry) -> miette::Result<()> {
             image,
             template_name,
             firmware,
+            installer,
+            system,
+            tools,
             label,
             memory,
             cpus,
             disk,
         } => {
             check_machine_name(&name)?;
+            let windows = !installer.is_empty() && system == System::Windows;
+            let memory = memory.unwrap_or(if windows { 4096 } else { 2048 });
+            let disk = disk.unwrap_or(if windows { 64 } else { 32 });
             if memory == 0 || cpus == 0 {
                 return Err(miette!("a machine needs some memory and at least one CPU"));
             }
-            let template = Template::from_image(&image, template_name.as_deref(), firmware)?;
             let disk_size = disk
                 .checked_mul(1 << 30)
-                .ok_or_else(|| miette!("{disk} GiB is more disk than there is"))?
-                .max(template.disk_size);
+                .ok_or_else(|| miette!("{disk} GiB is more disk than there is"))?;
+            let (source, disk_size) = match image {
+                Some(image) => {
+                    let template =
+                        Template::from_image(&image, template_name.as_deref(), firmware)?;
+                    let disk_size = disk_size.max(template.disk_size);
+                    (Source::Template(template), disk_size)
+                }
+                None => {
+                    let tools = tools.or_else(|| guest_tools(system));
+                    if windows && tools.is_none() {
+                        return Err(miette!(
+                            help = "pass the CD with --tools, or install the package that \
+                                    puts one there",
+                            "Windows Setup needs a CD of virtio drivers, and there is none at \
+                             {} under $XDG_DATA_DIRS",
+                            guest_tools_path(system)
+                        ));
+                    }
+                    let media = installer
+                        .iter()
+                        .chain(&tools)
+                        .map(|cd| Media::from_image(cd))
+                        .collect::<miette::Result<Vec<_>>>()?;
+                    (Source::Installer { system, media }, disk_size)
+                }
+            };
             MachineRequest::Create(Spec {
                 name,
                 label,
-                template,
+                source,
                 disk_size,
                 memory_mib: memory,
                 cpus,

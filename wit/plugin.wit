@@ -269,6 +269,47 @@ interface types {
         black,
     }
 
+    /// The system a machine installs from CDs.
+    enum guest-system {
+        /// Linux, or anything else that brings its own virtio drivers.
+        linux,
+        /// Windows, which needs virtio's drivers from a CD of their own, Hyper-V's
+        /// enlightenments and a TPM, and has no waypipe to show windows through, so
+        /// its whole screen is one window.
+        windows,
+    }
+
+    /// A CD image, already on this host. Like a template it is installed once and
+    /// shared by every machine given it, so its name carries `digest` too.
+    record machine-media {
+        /// What it is called: the image's file name. 1-64 characters of `[a-z0-9]`,
+        /// `.`, `_` and `-`.
+        name: string,
+        /// The image's SHA-256, in lowercase hex.
+        digest: string,
+        /// The image file, readable by whoever runs pm.
+        image: string,
+        /// The image file's length in bytes: what has to be uploaded.
+        file-size: u64,
+    }
+
+    /// A machine that starts empty and installs its system from CDs.
+    record machine-installer {
+        /// What it installs.
+        system: guest-system,
+        /// The CDs, in the order the machine is given them; it boots from the
+        /// first while its disk has nothing to boot.
+        media: list<machine-media>,
+    }
+
+    /// What a machine's disk starts from.
+    variant machine-source {
+        /// A copy-on-write layer over a template, ready to boot.
+        template(machine-template),
+        /// Nothing: the machine installs a system from CDs.
+        installer(machine-installer),
+    }
+
     /// A machine to make.
     record machine-spec {
         /// What it is called, which is also how every later request names it. 1-32
@@ -277,8 +318,8 @@ interface types {
         /// The colour its windows are framed in.
         label: machine-label,
         /// What its disk starts from.
-        template: machine-template,
-        /// The size of its disk, in bytes; never less than the template's.
+        source: machine-source,
+        /// The size of its disk, in bytes; never less than a template's.
         disk-size: u64,
         /// Memory, in MiB.
         memory-mib: u64,
@@ -293,8 +334,8 @@ interface types {
 
     /// Something to do to the host's machines.
     variant machine-request {
-        /// Install the template if it is not installed yet, and make a machine from
-        /// it. The machine is left stopped.
+        /// Install the template or CDs that are not installed yet, and make a
+        /// machine from them. The machine is left stopped.
         create(machine-spec),
         /// Print every machine, to pm's standard output.
         %list,

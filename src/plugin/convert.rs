@@ -22,13 +22,14 @@ use tracing::warn;
 use super::{
     Hook, Manifest, RecipeFunction, RecipeValue, Symbol,
     wit::{
-        WitCapability, WitDiskFormat, WitFirmware, WitGrant, WitHook, WitLaunch, WitMachine,
-        WitMachineLabel, WitMachineRequest, WitMachineSpec, WitMachineStep, WitMachineTemplate,
-        WitManifest, WitPermission, WitRecipeFunction, WitRecipeValue, WitSymbol, WitVerdict,
+        WitCapability, WitDiskFormat, WitFirmware, WitGrant, WitGuestSystem, WitHook, WitLaunch,
+        WitMachine, WitMachineInstaller, WitMachineLabel, WitMachineMedia, WitMachineRequest,
+        WitMachineSource, WitMachineSpec, WitMachineStep, WitMachineTemplate, WitManifest,
+        WitPermission, WitRecipeFunction, WitRecipeValue, WitSymbol, WitVerdict,
     },
 };
 use crate::{
-    machine::{DiskFormat, Firmware, Label, Request, Spec, Step, Template},
+    machine::{DiskFormat, Firmware, Label, Media, Request, Source, Spec, Step, System, Template},
     perms::{Grant, Permission, Provenance},
     policy::Capability,
 };
@@ -622,7 +623,18 @@ fn machine_spec(from: &Spec) -> WitMachineSpec {
             Label::Purple => WitMachineLabel::Purple,
             Label::Black => WitMachineLabel::Black,
         },
-        template: machine_template(&from.template),
+        source: match &from.source {
+            Source::Template(template) => WitMachineSource::Template(machine_template(template)),
+            Source::Installer { system, media } => {
+                WitMachineSource::Installer(WitMachineInstaller {
+                    system: match system {
+                        System::Linux => WitGuestSystem::Linux,
+                        System::Windows => WitGuestSystem::Windows,
+                    },
+                    media: media.iter().map(machine_media).collect(),
+                })
+            }
+        },
         disk_size: from.disk_size,
         memory_mib: from.memory_mib,
         cpus: from.cpus,
@@ -646,6 +658,15 @@ fn machine_template(from: &Template) -> WitMachineTemplate {
             Firmware::Uefi => WitFirmware::Uefi,
             Firmware::Bios => WitFirmware::Bios,
         },
+    }
+}
+
+fn machine_media(from: &Media) -> WitMachineMedia {
+    WitMachineMedia {
+        name: from.name.clone(),
+        digest: from.digest.clone(),
+        image: from.image.to_string_lossy().into_owned(),
+        file_size: from.file_size,
     }
 }
 
