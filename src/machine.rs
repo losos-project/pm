@@ -189,6 +189,12 @@ impl Template {
         name: Option<&str>,
         firmware: Firmware,
     ) -> miette::Result<Self> {
+        // Named before links are followed: a template the system ships is a
+        // link into the Nix store, whose file name starts with a store hash.
+        let name = match name {
+            Some(name) => name.to_owned(),
+            None => name_of_image(image),
+        };
         let image = image
             .canonicalize()
             .into_diagnostic()
@@ -220,10 +226,6 @@ impl Template {
             .into_diagnostic()
             .wrap_err_with(|| format!("cannot read the image {}", image.display()))?;
 
-        let name = match name {
-            Some(name) => name.to_owned(),
-            None => name_of_image(&image),
-        };
         check_template_name(&name)?;
         debug!(%name, format = format.name(), disk_size, "read the template image");
         Ok(Self {
@@ -316,6 +318,10 @@ impl Media {
     ///
     /// The image cannot be read, or its file's name makes no usable name.
     pub fn from_image(image: &Path) -> miette::Result<Self> {
+        // Named before links are followed, as a template is: the drivers CD the
+        // system ships is `windows-tools.iso`, a link to
+        // `/nix/store/<hash>-windows-tools.iso`.
+        let name = name_of_image(image);
         let image = image
             .canonicalize()
             .into_diagnostic()
@@ -327,7 +333,6 @@ impl Media {
         let digest = digest_of(&mut file, &[])
             .into_diagnostic()
             .wrap_err_with(|| format!("cannot read the CD image {}", image.display()))?;
-        let name = name_of_image(&image);
         check_template_name(&name)
             .wrap_err_with(|| format!("rename {} to use it", image.display()))?;
         Ok(Self {
@@ -791,6 +796,24 @@ mod tests {
         assert_eq!(media.file_size, 2048);
         assert_eq!(media.digest.len(), 64);
         assert!(Media::from_image(&dir.path().join("missing.iso")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_image_behind_a_link_is_named_after_the_link() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir
+            .path()
+            .join("1d1wdb48hd8yrr610k41ya5hy7v4rs2q-windows-tools.iso");
+        fs::write(&file, [1u8; 2048]).unwrap();
+        let link = dir.path().join("windows-tools.iso");
+        std::os::unix::fs::symlink(&file, &link).unwrap();
+
+        let media = Media::from_image(&link).unwrap();
+        assert_eq!(media.name, "windows-tools");
+        assert_eq!(media.image, file.canonicalize().unwrap());
+        let template = Template::from_image(&link, None, Firmware::Uefi).unwrap();
+        assert_eq!(template.name, "windows-tools");
     }
 
     #[test]
