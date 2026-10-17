@@ -25,20 +25,18 @@
 //! `qemu:///session` for everyone else. The plugin passes no `-c`, so whichever
 //! libvirt the user already drives virt-manager with is the one pm uses.
 //!
-//! # `pm machine`
+//! # Not `pm machine`
 //!
-//! It also manages the host's persistent machines, in the `machine-plugin` world: see
-//! [`machines`]. They are libvirt's too, in the `default` storage pool and on the
-//! `default` network, so virsh, virt-manager and a desktop that talks to libvirt see
-//! the same machines pm made.
+//! It used to manage the host's persistent machines as well, as libvirt domains in
+//! the `default` pool. The `quickemu` plugin does that now, with each user's
+//! machines in that user's own files and no daemon keeping a second record of
+//! them; a libvirt domain made by hand is still libvirt's to run.
 //!
 //! The plugin only writes XML and command lines. It reaches nothing: like every pm
 //! plugin it runs in a metered WebAssembly instance whose one import is `log`, and the
 //! one program it can make pm run is `virsh`, which `pm plugins` prints.
 
-wit_bindgen::generate!({ path: "../../wit", world: "machine-plugin" });
-
-mod machines;
+wit_bindgen::generate!({ path: "../../wit", world: "vm-plugin" });
 
 use pm::plugin::types::LaunchFile;
 
@@ -55,7 +53,7 @@ impl Guest for Libvirt {
         Manifest {
             name: "libvirt".into(),
             version: env!("CARGO_PKG_VERSION").into(),
-            summary: "Boots a package's own kernel, and manages the host's machines, through libvirt's virsh".into(),
+            summary: "Boots a package's own kernel through libvirt's virsh".into(),
             hooks: Vec::new(),
             grants_at_most: Vec::new(),
             source_extensions: Vec::new(),
@@ -75,10 +73,6 @@ impl Guest for Libvirt {
 
     fn launchers() -> Vec<String> {
         vec![VIRSH.into()]
-    }
-
-    fn machine_steps(request: MachineRequest) -> Result<Vec<MachineStep>, String> {
-        machines::steps(request)
     }
 
     fn launch_machine(machine: Machine) -> Result<Option<Launch>, String> {
@@ -166,13 +160,12 @@ fn domain_xml(machine: &Machine) -> String {
     )
 }
 
-/// `text` as XML character data or a single-quoted attribute value. Shared with
-/// [`machines`].
+/// `text` as XML character data or a single-quoted attribute value.
 ///
 /// The entrypoint's name reaches the title and the command line, and a package names
 /// its own entrypoints, so every string is escaped, not only the ones that look like
 /// they could hold markup.
-pub(crate) fn escape(text: &str) -> String {
+fn escape(text: &str) -> String {
     text.chars()
         .fold(String::with_capacity(text.len()), |mut out, c| {
             match c {

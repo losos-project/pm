@@ -332,6 +332,26 @@ interface types {
         arch: string,
     }
 
+    /// Where the machines of whoever asks are kept, and what a plugin cannot find
+    /// out for itself. Every user has machines of their own, as every user has
+    /// files of their own: pm asks on behalf of one user, and the plugin plans for
+    /// that user's machines alone.
+    record machine-place {
+        /// The directory that user's machines, and the templates and CDs they were
+        /// made from, are kept in: `pm/machines` under `$XDG_DATA_HOME`. pm has made
+        /// it, readable by that user alone, before it asks.
+        directory: string,
+        /// Whether the machines run under the user's own service manager
+        /// (`systemctl --user`) rather than the system's: true for everyone but
+        /// root, whose machines are the system's.
+        user-manager: bool,
+        /// 32 random bytes, fresh for each request, for what has to differ from one
+        /// machine to the next and that a plugin, which has no randomness of its
+        /// own, cannot draw: an identifier, a network card's address, a vsock
+        /// address.
+        random: list<u8>,
+    }
+
     /// Something to do to the host's machines.
     variant machine-request {
         /// Install the template or CDs that are not installed yet, and make a
@@ -538,9 +558,13 @@ world vm-plugin {
 world machine-plugin {
     include vm-plugin;
 
-    use types.{machine-request, machine-step};
+    use types.{machine-request, machine-place, machine-step};
 
-    /// The steps that carry `request` out, in order. An error refuses the request
-    /// with the plugin's message, before anything runs.
-    export machine-steps: func(request: machine-request) -> result<list<machine-step>, string>;
+    /// The steps that carry `request` out for the user `place` describes, in order.
+    /// An error refuses the request with the plugin's message, before anything runs.
+    ///
+    /// It replaced `machine-steps`, which took no place: every machine was the one
+    /// hypervisor daemon's, wherever the plugin put it. A plugin that still exports
+    /// that is not one pm asks about machines.
+    export machine-plan: func(request: machine-request, place: machine-place) -> result<list<machine-step>, string>;
 }

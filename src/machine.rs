@@ -9,23 +9,30 @@
 //!
 //! pm knows what a machine is and what can be asked of it, but not how a hypervisor
 //! does any of it. A [`Manager`] - on a real host, a plugin built against the
-//! `machine-plugin` world, such as `libvirt` - turns each [`Request`] into the
+//! `machine-plugin` world, such as `quickemu` - turns each [`Request`] into the
 //! [`Step`]s that carry it out, and [`carry_out`] runs them: the plugin decides, pm
 //! executes, and everything it can execute is one of the programs the plugin listed
 //! when it loaded.
+//!
+//! Every user has machines of their own, kept where that user keeps their other
+//! data ([`Place`]), as their files are: pm asks the plugin on behalf of the user
+//! running it, about that user's machines alone.
 
 use std::{
     fmt,
     fs::{self, DirBuilder, File},
     io::{self, Read},
-    os::unix::fs::{DirBuilderExt, PermissionsExt},
+    os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     str::FromStr,
 };
 
 use miette::{IntoDiagnostic, WrapErr, miette};
-use ring::digest::{Context, SHA256};
+use ring::{
+    digest::{Context, SHA256},
+    rand::{SecureRandom, SystemRandom},
+};
 use tracing::{debug, info, warn};
 
 use crate::vm::{Launch, find_on_path, launch::write_file};
@@ -114,7 +121,7 @@ pub enum DiskFormat {
 }
 
 impl DiskFormat {
-    /// The format's name, as QEMU and libvirt spell it.
+    /// The format's name, as QEMU spells it.
     #[must_use]
     pub const fn name(self) -> &'static str {
         match self {
@@ -507,15 +514,78 @@ pub struct Step {
     pub undo: Option<Launch>,
 }
 
+/// Where the machines of the user running pm are, and the randomness a plugin has
+/// none of.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Place {
+    /// The directory the user's machines, templates and CDs are kept in.
+    pub directory: PathBuf,
+    /// Whether they run under the user's own service manager: everyone's but
+    /// root's, whose machines are the system's.
+    pub user_manager: bool,
+    /// Fresh for each request.
+    pub random: [u8; 32],
+}
+
+impl Place {
+    /// The running user's place: `pm/machines` under `$XDG_DATA_HOME`, or under
+    /// `~/.local/share` when that is unset, made private to the user if it is not
+    /// there yet.
+    ///
+    /// # Errors
+    ///
+    /// Neither variable names a directory, the directory cannot be made, or the
+    /// system has no randomness to give.
+    pub fn for_this_user() -> miette::Result<Self> {
+        let data = std::env::var_os("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            // The XDG specification says a relative value is to be ignored.
+            .filter(|path| path.is_absolute())
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .filter(|home| home.is_absolute())
+                    .map(|home| home.join(".local/share"))
+            })
+            .ok_or_else(|| {
+                miette!(
+                    help = "set $HOME, or point $XDG_DATA_HOME at an absolute directory",
+                    "neither $XDG_DATA_HOME nor $HOME names a directory to keep machines in"
+                )
+            })?;
+        let directory = data.join("pm").join("machines");
+        // A machine's disk is everything its owner did in it, so nobody else
+        // reads it, nor the sockets that drive it.
+        DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(&directory)
+            .into_diagnostic()
+            .wrap_err_with(|| format!("cannot make {}", directory.display()))?;
+        // The owner of /proc/self is the process's effective user, which std has
+        // no other safe way to tell.
+        let root = fs::metadata("/proc/self").is_ok_and(|me| me.uid() == 0);
+        let mut random = [0u8; 32];
+        SystemRandom::new()
+            .fill(&mut random)
+            .map_err(|_| miette!("the system has no randomness to give a new machine"))?;
+        Ok(Self {
+            directory,
+            user_manager: !root,
+            random,
+        })
+    }
+}
+
 /// Something that knows how a hypervisor carries out a [`Request`].
 pub trait Manager {
-    /// The steps that carry `request` out, in order.
+    /// The steps that carry `request` out for the user `place` describes, in order.
     ///
     /// # Errors
     ///
     /// Nothing on the host manages machines, or the one that does refused the
     /// request.
-    fn steps(&self, request: &Request) -> miette::Result<Vec<Step>>;
+    fn steps(&self, request: &Request, place: &Place) -> miette::Result<Vec<Step>>;
 }
 
 /// Carry `request` out: ask `manager` for its steps and run them.
@@ -537,7 +607,8 @@ pub trait Manager {
 ///
 /// The manager refused, a program is missing, or a step failed.
 pub fn carry_out(manager: &dyn Manager, request: &Request) -> miette::Result<()> {
-    let steps = manager.steps(request)?;
+    let place = Place::for_this_user()?;
+    let steps = manager.steps(request, &place)?;
     let scratch = tempfile::Builder::new()
         .prefix("pm-machine-")
         .tempdir()
@@ -673,8 +744,8 @@ impl Runner<'_> {
 /// Whether the host has KVM for a hypervisor to use.
 ///
 /// Whether the device exists, not whether this process can open it: the
-/// hypervisor that runs the machines - libvirt's system daemon, say - is usually
-/// not this process, and can open what this user cannot.
+/// hypervisor that runs the machines may run as someone else, and be able to open
+/// what this user cannot.
 #[must_use]
 pub fn host_has_kvm() -> bool {
     Path::new("/dev/kvm").exists()

@@ -174,7 +174,7 @@ export launch-machine: func(machine: machine) -> result<option<launch>, string>;
 ```
 
 `launchers` is called once, at load, and names every program the plugin may
-have pm run: bare names, found on `PATH`, at most eight. `pm plugins` prints
+have pm run: bare names, found on `PATH`, at most twelve. `pm plugins` prints
 them, and a launch naming anything else is refused, so that line is the most a
 plugin can ever start. This is the only world whose answer makes pm run
 anything.
@@ -208,8 +208,15 @@ persistent virtual machines for `pm machine`. It is a `vm-plugin` - the same
 `launchers`, printed by `pm plugins` with `machines: yes` - plus one call:
 
 ```wit
-export machine-steps: func(request: machine-request) -> result<list<machine-step>, string>;
+export machine-plan: func(request: machine-request, place: machine-place) -> result<list<machine-step>, string>;
 ```
+
+Every user has machines of their own. The place says where the user pm runs as
+keeps them, `pm/machines` under `$XDG_DATA_HOME`, which pm has made private to
+them; whether they run under that user's own service manager (everyone's but
+root's); and 32 random bytes fresh for the request, for what has to differ from
+one machine to the next, since a plugin has no randomness of its own. A plugin
+that still exports the old `machine-steps`, which had no place, is not asked.
 
 A request is `create(machine-spec)`, `list`, or `start`, `stop`, `kill` or
 `remove` of a machine by name; the spec carries the name, the label, its
@@ -235,14 +242,17 @@ the failed step's, which is taken to have changed nothing. Only the first plugin
 that manages machines is asked: every request about a machine has to reach the
 hypervisor that made it.
 
-`libvirt/` is the example. Its steps install the template as a volume in the
-`default` pool unless a volume of its name is there (`vol-create-as`,
-`vol-upload`, `pool-refresh`, all skipped together), make the machine's qcow2
-disk on top of it, and `define` a persistent domain. An installer's CDs are
-installed the same way, each on its own, and its disk starts empty. `remove`
-powers the machine off if it runs and `undefine`s it with its own disk
-(`--storage vda`) and UEFI variables, leaving the template and the CDs other
-machines may share.
+`quickemu/` is the example. Its steps check no machine has the name, copy the
+template in read-only under `templates/` unless it is there (`cp` to a `.part`,
+`chmod`, `mv`, all skipped together), make the machine's folder and its qcow2
+disk on top of the template, and write the machine's `<name>.conf` and
+`machine.json`. An installer's CDs are copied in the same way, each on its own,
+and its disk starts empty. `start` runs `quickemu --vm` in a service of its own
+(`systemd-run`), `stop` has quickemu ask the guest to shut down, `kill` stops
+the service, and `remove` stops it if it runs and deletes the machine's folder
+and `.conf`, leaving the template and the CDs other machines may share.
+`libvirt/`, which managed machines as libvirt domains before, now only boots
+packages' kernels.
 
 ## Trust
 
@@ -326,7 +336,8 @@ Rust-specific; Rust is simply what these examples are written in.
 | `systemd/`    | classifies systemd tooling, reads unit files, publishes the install dirs  |
 | `sysupdate/`  | classifies `systemd-sysupdate` and reads its transfer definitions         |
 | `sysext/`     | classifies the system-extension image toolchain; one hook, on purpose     |
-| `libvirt/`    | boots a package's kernel and manages `pm machine`s in libvirt, via `virsh` |
+| `libvirt/`    | boots a package's kernel through libvirt, via `virsh`                     |
+| `quickemu/`   | manages each user's `pm machine`s with quickemu, as services of their own |
 | `unitfile/`   | the unit-file parser the three systemd plugins share - an ordinary lib    |
 | `encoder/`    | core module → component, so `build.sh` needs no `cargo install`           |
 | `fixtures/*`  | deliberately badly behaved plugins, for `tests/plugins.rs`                |

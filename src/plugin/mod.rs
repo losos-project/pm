@@ -967,7 +967,11 @@ impl pm_vm::Launcher for Registry {
 /// hypervisor, or `pm machine start` could look for a machine where `pm machine
 /// create` never put it.
 impl crate::machine::Manager for Registry {
-    fn steps(&self, request: &crate::machine::Request) -> Result<Vec<crate::machine::Step>> {
+    fn steps(
+        &self,
+        request: &crate::machine::Request,
+        place: &crate::machine::Place,
+    ) -> Result<Vec<crate::machine::Step>> {
         let plugin = self.runtime.as_ref().zip(
             self.plugins
                 .iter()
@@ -975,7 +979,7 @@ impl crate::machine::Manager for Registry {
         );
         let Some((runtime, plugin)) = plugin else {
             return Err(miette!(
-                help = "install and sign a plugin that does, such as pm's libvirt plugin \
+                help = "install and sign a plugin that does, such as pm's quickemu plugin \
                         (plugins/README.md, \"Managing machines\")",
                 "no plugin manages machines here, so pm cannot {}",
                 request.describe()
@@ -983,9 +987,10 @@ impl crate::machine::Manager for Registry {
         };
         let name = &plugin.manifest.name;
         let offered = convert::machine_request(request);
+        let place = convert::machine_place(place);
         let answer = runtime
             .enter_machine(name, &plugin.component, |bindings, store| {
-                bindings.call_machine_steps(store, &offered)
+                bindings.call_machine_plan(store, &offered, &place)
             })
             .wrap_err_with(|| format!("the plugin {name} could not {}", request.describe()))?
             .map_err(|message| {
@@ -1163,7 +1168,7 @@ fn load_one(runtime: &Runtime, path: &Path, trust: Option<&TrustStore>) -> Resul
             })
             .wrap_err_with(|| format!("the plugin {file} could not list its launchers"))?;
         manifest.launchers = convert::launchers(offered, &manifest.name);
-        manifest.manages_machines = Runtime::has_machine_steps(&component);
+        manifest.manages_machines = Runtime::has_machine_plan(&component);
     }
 
     Ok(Plugin {
