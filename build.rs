@@ -48,8 +48,9 @@ const BUNDLED: [&str; 14] = [
 ];
 
 /// Example and adversarial plugins used by integration tests, not embedded in pm.
-const TEST_PLUGINS: [&str; 11] = [
+const TEST_PLUGINS: [&str; 12] = [
     "libvirt",
+    "quickemu",
     "systemd",
     "sysext",
     "sysupdate",
@@ -85,6 +86,7 @@ fn main() {
         "plugins/bundled",
         "plugins/fixtures",
         "plugins/libvirt",
+        "plugins/quickemu",
         "plugins/systemd",
         "plugins/sysext",
         "plugins/sysupdate",

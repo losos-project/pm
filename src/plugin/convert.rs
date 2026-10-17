@@ -23,13 +23,15 @@ use super::{
     Hook, Manifest, RecipeFunction, RecipeValue, Symbol,
     wit::{
         WitCapability, WitDiskFormat, WitFirmware, WitGrant, WitGuestSystem, WitHook, WitLaunch,
-        WitMachine, WitMachineInstaller, WitMachineLabel, WitMachineMedia, WitMachineRequest,
-        WitMachineSource, WitMachineSpec, WitMachineStep, WitMachineTemplate, WitManifest,
-        WitPermission, WitRecipeFunction, WitRecipeValue, WitSymbol, WitVerdict,
+        WitMachine, WitMachineInstaller, WitMachineLabel, WitMachineMedia, WitMachinePlace,
+        WitMachineRequest, WitMachineSource, WitMachineSpec, WitMachineStep, WitMachineTemplate,
+        WitManifest, WitPermission, WitRecipeFunction, WitRecipeValue, WitSymbol, WitVerdict,
     },
 };
 use crate::{
-    machine::{DiskFormat, Firmware, Label, Media, Request, Source, Spec, Step, System, Template},
+    machine::{
+        DiskFormat, Firmware, Label, Media, Place, Request, Source, Spec, Step, System, Template,
+    },
     perms::{Grant, Permission, Provenance},
     policy::Capability,
 };
@@ -155,8 +157,11 @@ pub(super) fn manifest(from: WitManifest, file: &str) -> Result<Manifest, String
     })
 }
 
-/// The most programs a plugin may list in `launchers`.
-const LAUNCHERS_MAX: usize = 8;
+/// The most programs a plugin may list in `launchers`: few enough to read at a
+/// glance under `pm plugins`, and enough for a plugin that keeps machines as plain
+/// files, as `quickemu` does, to name each coreutil it moves them with rather than
+/// one shell that could run anything.
+const LAUNCHERS_MAX: usize = 12;
 
 /// Read the programs a `vm-plugin` may have pm run, dropping any that is not a bare
 /// program name.
@@ -607,6 +612,15 @@ pub(super) fn machine_request(from: &Request) -> WitMachineRequest {
         Request::Stop(name) => WitMachineRequest::Stop(name.clone()),
         Request::Kill(name) => WitMachineRequest::Kill(name.clone()),
         Request::Remove(name) => WitMachineRequest::Remove(name.clone()),
+    }
+}
+
+/// Where the asking user's machines are, as the `machine-plugin` world spells it.
+pub(super) fn machine_place(from: &Place) -> WitMachinePlace {
+    WitMachinePlace {
+        directory: from.directory.to_string_lossy().into_owned(),
+        user_manager: from.user_manager,
+        random: from.random.to_vec(),
     }
 }
 

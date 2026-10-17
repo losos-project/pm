@@ -140,9 +140,9 @@ jobs:
       # tests of the crates under crates/ as well as the root package's suite.
       - run: cargo test --workspace --all-features
       # The plugins are their own workspace and build for wasm32, but the libvirt
-      # plugin's planning is plain Rust: its unit tests run on the host, against
-      # the bindings wit-bindgen generates for it there.
-      - run: cargo test --manifest-path plugins/Cargo.toml -p libvirt
+      # and quickemu plugins' planning is plain Rust: their unit tests run on the
+      # host, against the bindings wit-bindgen generates for them there.
+      - run: cargo test --manifest-path plugins/Cargo.toml -p libvirt -p quickemu
 
   sandbox:
     name: "confined tests (userns + landlock)"

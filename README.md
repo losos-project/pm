@@ -162,7 +162,9 @@ much smaller than `pm`, which is used in its place when it is missing.
 
 `pm machine` keeps virtual machines that outlive any one command: each is made
 from a *template*, a disk image, and gets a copy-on-write disk of its own on top
-of it, so any number of machines share one template's space.
+of it, so any number of machines share one template's space. They are yours, as
+your files are: kept under `$XDG_DATA_HOME/pm/machines`, readable by you alone,
+and run as you.
 
 ```sh
 pm machine create work --image guest.qcow2 --label blue   # left stopped
@@ -192,7 +194,7 @@ Each `--installer` is a CD, installed once and shared like a template; the
 machine boots its disk first and the first CD while the disk has nothing to
 boot, so the installer runs once and the system it installed starts after. It
 has a screen, for the installer and for a system that cannot send its windows
-to the desktop, which a viewer attaching through libvirt shows. `--system`
+to the desktop, which a SPICE viewer shows. `--system`
 (linux, the default, or windows) also gives it the host's CD of tools for that
 system, the first `pm/machines/<system>-tools.iso` under `$XDG_DATA_DIRS`, or
 the one `--tools` names: what a host puts there is what fits a guest to its
@@ -204,13 +206,15 @@ Hyper-V's enlightenments under KVM, its clock in local time, 4096 MiB and
 pm does none of this itself. The first installed plugin built against the
 `machine-plugin` world turns each request into steps and pm runs them, held to
 the programs the plugin listed at load - see "Managing machines" in
-`plugins/README.md`. The `libvirt` plugin (`plugins/libvirt/`) makes them
-libvirt's: the template becomes a volume in the `default` storage pool, the
-machine a persistent domain on the `default` network with its label in its
-`<metadata>`, a vsock device (not for Windows) and a QEMU guest agent channel; a
-CD becomes a volume beside the templates, `pm-media-<name>-<digest>.iso`. virsh and
-virt-manager see the same machines. Names are 1-32 characters of `a-z`, `0-9`
-and `-`, starting with a letter, checked before any plugin sees them.
+`plugins/README.md`. The `quickemu` plugin (`plugins/quickemu/`) makes them
+quickemu's: the template is copied in read-only under `templates/`, the machine
+is a `<name>.conf` quickemu reads and a folder holding its disk and pm's record of
+it, `machine.json`, with its label, its vsock address (not for Windows) and what
+it was made from; a CD is copied in under `cds/`. A machine runs as the service
+`pm-machine-<name>` of your own service manager, on the host's `virbr0` bridge
+when it has one, with QEMU's guest agent and its screen on sockets in its
+folder. Names are 1-32 characters of `a-z`, `0-9` and `-`, starting with a
+letter, checked before any plugin sees them.
 
 ## Integration with distribution build tools
 

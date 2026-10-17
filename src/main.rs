@@ -412,13 +412,14 @@ enum Commands {
         #[arg(long)]
         digests: bool,
     },
-    /// Make, list, start, stop and remove the host's virtual machines.
+    /// Make, list, start, stop and remove your virtual machines.
     ///
     /// A machine is made from a template - a disk image - and gets a copy-on-write
     /// disk of its own on top of it, so any number of machines share one template's
-    /// space. Each has a label, the colour a desktop frames its windows in. pm does
+    /// space. Each has a label, the colour a desktop frames its windows in. They
+    /// are yours, kept under `$XDG_DATA_HOME/pm/machines`, and run as you. pm does
     /// none of this itself: the first installed plugin that manages machines, such
-    /// as libvirt, decides what to run, and pm runs it.
+    /// as quickemu, decides what to run, and pm runs it.
     Machine {
         #[command(subcommand)]
         command: MachineCommand,
@@ -492,7 +493,7 @@ enum MachineCommand {
         #[arg(long, value_name = "GIB")]
         disk: Option<u64>,
     },
-    /// List the host's machines.
+    /// List your machines.
     List,
     /// Start a machine.
     Start {

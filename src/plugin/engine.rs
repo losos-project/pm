@@ -286,9 +286,8 @@ impl Runtime {
 
     /// Whether `component` exports what the `machine-plugin` world adds, so
     /// [`Runtime::enter_machine`] can instantiate it.
-    pub(super) fn has_machine_steps(component: &Component) -> bool {
-        Self::has_launchers(component)
-            && component.get_export_index(None, "machine-steps").is_some()
+    pub(super) fn has_machine_plan(component: &Component) -> bool {
+        Self::has_launchers(component) && component.get_export_index(None, "machine-plan").is_some()
     }
 
     fn enter_as<B, T>(

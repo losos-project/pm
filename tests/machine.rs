@@ -1,53 +1,51 @@
-//! `pm machine`, end to end through the CLI: the `libvirt` plugin plans each request
-//! and pm runs the plan against a stand-in `virsh` that keeps the host's state as
-//! files, so these need no libvirt.
+//! `pm machine`, end to end through the CLI: the `quickemu` plugin plans each request
+//! and pm runs the plan, with the real coreutils for the files and stand-ins for
+//! `qemu-img`, `quickemu`, `systemd-run` and `systemctl`, which keep whether a
+//! machine runs as files, so these need no QEMU and no service manager.
 //!
-//! The stand-in knows what a real `virsh` answers for the commands the plugin uses -
-//! `vol-info` fails for a missing volume, `domjobinfo` fails for a machine that is
-//! not running - and fails whichever command `$FAIL` names, to see what pm takes
-//! back. `tests/vm_plugins.rs` checks the plugin's answers themselves.
-//!
-//! One test runs against a real libvirt daemon, when asked:
-//!
-//! ```sh
-//! cargo test --test machine -- --ignored
-//! ```
-//!
-//! It needs `virsh`, `qemu-img` and a daemon at libvirt's default URI with a
-//! `default` storage pool, and leaves nothing behind.
+//! The stand-ins answer as the real ones would for what the plugin asks -
+//! `systemctl is-active` fails for a machine that does not run - and fail whichever
+//! program `$FAIL` names, to see what pm takes back. The plugin's own tests check
+//! its answers themselves.
 
 use std::{
     fs::{self, create_dir_all, read_to_string, set_permissions, write},
-    os::unix::fs::PermissionsExt,
+    os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
     process::{Command, Output},
 };
 
 use tempfile::{TempDir, tempdir};
 
-/// The stand-in: every call appended to `$LOG`, state as files under `$STATE`.
-const FAKE_VIRSH: &str = r#"#!/bin/sh
-echo "$*" >> "$LOG"
-[ "$1" = -q ] && shift
-[ -n "$FAIL" ] && [ "$1" = "$FAIL" ] && { echo "virsh: $1 failed on purpose" >&2; exit 1; }
-case "$1" in
-  vol-info) [ -e "$STATE/vol-$4" ] ;;
-  vol-create-as) [ ! -e "$STATE/vol-$3" ] && touch "$STATE/vol-$3" ;;
-  vol-upload) cp "$5" "$STATE/vol-$4" ;;
-  vol-delete) rm "$STATE/vol-$4" ;;
-  pool-refresh) : ;;
-  define) name=$(sed -n 's:.*<name>\(.*\)</name>.*:\1:p' "$2"); [ ! -e "$STATE/domain-$name" ] && cp "$2" "$STATE/domain-$name" ;;
-  undefine) rm "$STATE/domain-$2" && rm -f "$STATE/vol-pm-machine-$2.qcow2" ;;
-  domjobinfo) [ -e "$STATE/running-$2" ] ;;
-  start) [ -e "$STATE/domain-$2" ] && touch "$STATE/running-$2" ;;
-  shutdown|destroy) rm "$STATE/running-$2" ;;
-  list) echo " Id   Name   State"; for d in "$STATE"/domain-*; do [ -e "$d" ] && echo " -    ${d##*/domain-}"; done ;;
-  *) echo "virsh: unexpected $1" >&2; exit 2 ;;
+/// The stand-ins, one script for all four, by the name it is called by: every call
+/// appended to `$LOG`, whether a machine runs as `$STATE/running-<unit>`.
+const STAND_IN: &str = r#"#!/bin/sh
+program=${0##*/}
+echo "$program $*" >> "$LOG"
+[ -n "$FAIL" ] && [ "$program" = "$FAIL" ] && { echo "$program failed on purpose" >&2; exit 1; }
+case "$program" in
+  qemu-img)
+    # The disk is the next to last argument.
+    eval "disk=\${$(($# - 1))}"
+    [ ! -e "$disk" ] && echo qcow2 > "$disk" ;;
+  systemd-run)
+    for arg; do case "$arg" in --unit=*) unit=${arg#--unit=} ;; esac; done
+    [ ! -e "$STATE/running-$unit" ] && touch "$STATE/running-$unit" ;;
+  systemctl)
+    [ "$1" = --user ] && shift
+    case "$1" in
+      --quiet) [ -e "$STATE/running-$3" ] ;;
+      stop) rm "$STATE/running-$2" ;;
+      list-units) for unit in "$STATE"/running-*; do [ -e "$unit" ] && echo "${unit##*/running-} loaded active running"; done; true ;;
+      *) echo "systemctl: unexpected $1" >&2; exit 2 ;;
+    esac ;;
+  quickemu) : ;;
+  *) echo "$program: unexpected" >&2; exit 2 ;;
 esac
 "#;
 
-/// A host for `pm machine`: the libvirt plugin, the stand-in on `PATH`, and a
-/// template image.
+/// A host for `pm machine`: the quickemu plugin, the stand-ins on `PATH`, a template
+/// image, and a home of its own to keep machines in.
 struct Host {
     root: TempDir,
 }
@@ -56,17 +54,20 @@ impl Host {
     fn new() -> Self {
         let root = tempdir().expect("a temporary directory");
         let path = root.path();
-        for dir in ["bin", "plugins", "state", "share/pm/machines"] {
+        for dir in ["bin", "plugins", "state", "data", "share/pm/machines"] {
             create_dir_all(path.join(dir)).expect("make the host's directories");
         }
         fs::copy(
-            Path::new(env!("PM_TEST_PLUGIN_DIR")).join("libvirt.wasm"),
-            path.join("plugins/libvirt.wasm"),
+            Path::new(env!("PM_TEST_PLUGIN_DIR")).join("quickemu.wasm"),
+            path.join("plugins/quickemu.wasm"),
         )
-        .expect("stage the libvirt plugin");
-        let virsh = path.join("bin/virsh");
-        write(&virsh, FAKE_VIRSH).expect("write the stand-in virsh");
-        set_permissions(&virsh, fs::Permissions::from_mode(0o755)).expect("make it executable");
+        .expect("stage the quickemu plugin");
+        for program in ["qemu-img", "quickemu", "systemd-run", "systemctl"] {
+            let stand_in = path.join("bin").join(program);
+            write(&stand_in, STAND_IN).expect("write a stand-in");
+            set_permissions(&stand_in, fs::Permissions::from_mode(0o755))
+                .expect("make it executable");
+        }
         write(path.join("Guest.img"), [0u8; 4096]).expect("write a template image");
         write(path.join("Win11.iso"), [1u8; 4096]).expect("write an installer CD");
         write(path.join("log"), "").expect("start the log");
@@ -75,6 +76,11 @@ impl Host {
 
     fn path(&self, name: &str) -> PathBuf {
         self.root.path().join(name)
+    }
+
+    /// Where the plugin keeps the machines.
+    fn machines(&self, name: &str) -> PathBuf {
+        self.path("data/pm/machines").join(name)
     }
 
     fn pm(&self, args: &[&str], fail: Option<&str>) -> Output {
@@ -92,6 +98,7 @@ impl Host {
             .env("PATH", path)
             .env("LOG", self.path("log"))
             .env("STATE", self.path("state"))
+            .env("XDG_DATA_HOME", self.path("data"))
             // Where the host's CDs of guest tools are looked for: here, so the
             // runner's own never answer.
             .env("XDG_DATA_DIRS", self.path("share"))
@@ -112,17 +119,22 @@ impl Host {
         String::from_utf8(output.stdout).expect("pm prints text")
     }
 
-    /// The `virsh` calls since the last time this was asked, without `-q`.
+    /// The stand-ins' calls since the last time this was asked, with the
+    /// machines' directory as `$M`.
     fn calls(&self) -> Vec<String> {
         let log = read_to_string(self.path("log")).expect("read the log");
         write(self.path("log"), "").expect("clear the log");
+        let machines = self.machines("");
+        let machines = machines.to_str().unwrap().trim_end_matches('/');
         log.lines()
-            .map(|line| line.strip_prefix("-q ").unwrap_or(line).to_owned())
+            .map(|line| line.replace(machines, "$M"))
             .collect()
     }
 
-    fn state(&self, name: &str) -> bool {
-        self.path("state").join(name).exists()
+    fn running(&self, name: &str) -> bool {
+        self.path("state")
+            .join(format!("running-pm-machine-{name}.service"))
+            .exists()
     }
 
     fn create(&self, name: &str) -> Output {
@@ -141,53 +153,59 @@ impl Host {
     }
 }
 
-/// `vol-<name>` for the template the host's image becomes.
-fn template_volume(host: &Host) -> String {
-    fs::read_dir(host.path("state"))
+/// The file the host's image became, in the machines' templates.
+fn template_file(host: &Host) -> String {
+    fs::read_dir(host.machines("templates"))
         .unwrap()
         .filter_map(|entry| entry.ok())
         .map(|entry| entry.file_name().to_string_lossy().into_owned())
-        .find(|name| name.starts_with("vol-pm-template-guest-"))
+        .find(|name| name.starts_with("guest-") && name.ends_with(".raw"))
         .expect("the template is installed")
 }
 
 #[test]
-fn the_first_machine_installs_the_template_and_the_second_reuses_it() {
+fn the_first_machine_copies_the_template_in_and_the_second_reuses_it() {
     let host = Host::new();
     assert!(host.create("work").status.success());
-    let first = host.calls();
-    let template = template_volume(&host);
-    let volume = template.strip_prefix("vol-").unwrap();
-    assert!(volume.ends_with(".raw"), "{volume}");
+    let template = template_file(&host);
     assert_eq!(
-        first,
-        [
-            format!("vol-info --pool default {volume}"),
-            format!("vol-create-as default {volume} 4096B --format raw"),
-            format!(
-                "vol-upload --pool default {volume} {} --sparse",
-                host.path("Guest.img").canonicalize().unwrap().display()
-            ),
-            "pool-refresh default".into(),
-            format!(
-                "vol-create-as default pm-machine-work.qcow2 34359738368B --format qcow2 \
-                 --backing-vol {volume} --backing-vol-format raw"
-            ),
-            "define domain.xml".into(),
-        ]
+        host.calls(),
+        [format!(
+            "qemu-img create -q -f qcow2 -F raw -b $M/templates/{template} $M/work/disk.qcow2 \
+             34359738368"
+        )]
     );
-    let domain = read_to_string(host.path("state/domain-work")).unwrap();
-    assert!(domain.contains("<pm:label>blue</pm:label>"), "{domain}");
+    // A read-only copy of the image, and the machine beside it.
+    let copy = host.machines("templates").join(&template);
+    assert_eq!(fs::read(&copy).unwrap(), [0u8; 4096]);
+    assert_eq!(copy.metadata().unwrap().permissions().mode() & 0o777, 0o444);
+    let record = read_to_string(host.machines("work/machine.json")).unwrap();
+    assert!(record.contains("\"label\": \"blue\""), "{record}");
+    let conf = read_to_string(host.machines("work.conf")).unwrap();
+    assert!(conf.contains("network='virbr0'"), "{conf}");
+    assert_eq!(
+        host.machines("").metadata().unwrap().permissions().mode() & 0o777,
+        0o700,
+        "nobody else reads a person's machines"
+    );
 
     assert!(host.create("personal").status.success());
-    let second = host.calls();
-    assert_eq!(second.len(), 3, "{second:?}");
-    assert!(second[1].starts_with("vol-create-as default pm-machine-personal.qcow2"));
-    assert_eq!(second[2], "define domain.xml");
+    assert_eq!(host.calls().len(), 1);
+    assert!(host.machines("personal/machine.json").exists());
+    // The two machines have addresses of their own.
+    let address = |name: &str| {
+        let record = read_to_string(host.machines(&format!("{name}/machine.json"))).unwrap();
+        record
+            .lines()
+            .find(|line| line.contains("\"cid\""))
+            .unwrap()
+            .to_owned()
+    };
+    assert_ne!(address("work"), address("personal"));
 }
 
 #[test]
-fn a_failed_definition_takes_the_new_template_and_disk_back() {
+fn a_failed_disk_takes_the_new_template_and_folder_back() {
     let host = Host::new();
     let output = host.pm(
         &[
@@ -197,59 +215,38 @@ fn a_failed_definition_takes_the_new_template_and_disk_back() {
             "--image",
             host.path("Guest.img").to_str().unwrap(),
         ],
-        Some("define"),
+        Some("qemu-img"),
     );
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("define the machine work"), "{stderr}");
-    let calls = host.calls();
-    let template = calls[1].split(' ').nth(2).unwrap();
-    let forget = format!("vol-delete --pool default {template}");
-    assert_eq!(
-        calls[calls.len() - 3..],
-        [
-            "vol-delete --pool default pm-machine-work.qcow2".to_owned(),
-            forget.clone(),
-            forget,
-        ],
-        "the disk, then the template once per step that made it: {calls:?}"
+    assert!(
+        stderr.contains("make the disk of the machine work"),
+        "{stderr}"
     );
-    let left: Vec<_> = fs::read_dir(host.path("state")).unwrap().collect();
+    let left: Vec<_> = fs::read_dir(host.machines("templates"))
+        .unwrap()
+        .chain(
+            fs::read_dir(host.machines(""))
+                .unwrap()
+                .filter(|entry| entry.as_ref().unwrap().file_name() != "templates"),
+        )
+        .collect();
     assert!(left.is_empty(), "nothing stays behind: {left:?}");
 }
 
 #[test]
-fn a_disk_that_exists_already_is_not_deleted_by_the_failure_it_causes() {
+fn a_machine_that_exists_already_is_left_as_it_was() {
     let host = Host::new();
-    write(
-        host.path("state/vol-pm-machine-work.qcow2"),
-        "someone else's",
-    )
-    .unwrap();
-    let output = host.pm(
-        &[
-            "machine",
-            "create",
-            "work",
-            "--image",
-            host.path("Guest.img").to_str().unwrap(),
-        ],
-        None,
-    );
-    assert!(!output.status.success());
+    assert!(host.create("work").status.success());
+    write(host.machines("work/disk.qcow2"), "what work did").unwrap();
+    host.calls();
+    assert!(!host.create("work").status.success());
+    assert!(host.calls().is_empty(), "nothing was run");
     assert_eq!(
-        read_to_string(host.path("state/vol-pm-machine-work.qcow2")).unwrap(),
-        "someone else's"
+        read_to_string(host.machines("work/disk.qcow2")).unwrap(),
+        "what work did"
     );
-    // The template it installed on the way is taken back, though.
-    let calls = host.calls();
-    assert!(
-        calls
-            .last()
-            .unwrap()
-            .starts_with("vol-delete --pool default pm-template-")
-    );
-    assert!(!host.state("domain-work"));
+    assert!(host.machines("work.conf").exists());
 }
 
 #[test]
@@ -258,16 +255,25 @@ fn start_stop_and_remove_follow_the_machine_state() {
     assert!(host.create("work").status.success());
     host.calls();
 
+    // Root's machines are the system's, everyone else's their own.
+    let root = fs::metadata("/proc/self").is_ok_and(|me| me.uid() == 0);
+    let user = if root { "" } else { "--user " };
     host.ok(&["machine", "start", "work"]);
-    assert!(host.state("running-work"));
+    assert!(host.running("work"));
     host.ok(&["machine", "start", "work"]);
+    let running = format!("systemctl {user}--quiet is-active pm-machine-work.service");
+    let stop = format!("systemctl {user}stop pm-machine-work.service");
     assert_eq!(
         host.calls(),
         [
-            "domjobinfo work",
-            "start work",
+            running.clone(),
+            format!(
+                "systemd-run {user}--unit=pm-machine-work.service --description=The machine work \
+                 --collect --quiet --property=Type=forking --property PIDFile=$M/work/work.pid \
+                 quickemu --vm $M/work.conf"
+            ),
             // Running already: asked, and left alone.
-            "domjobinfo work",
+            running.clone(),
         ]
     );
 
@@ -275,28 +281,28 @@ fn start_stop_and_remove_follow_the_machine_state() {
     host.ok(&["machine", "kill", "work"]);
     assert_eq!(
         host.calls(),
-        ["domjobinfo work", "shutdown work", "domjobinfo work"]
-    );
-
-    let listed = host.ok(&["machine", "list"]);
-    assert!(listed.contains("work"), "{listed}");
-    host.calls();
-
-    host.ok(&["machine", "start", "work"]);
-    host.calls();
-    host.ok(&["machine", "remove", "work"]);
-    assert_eq!(
-        host.calls(),
         [
-            "domjobinfo work",
-            "destroy work",
-            "undefine work --nvram --storage vda"
+            running.clone(),
+            "quickemu --vm $M/work.conf --monitor-cmd system_powerdown".into(),
+            running.clone(),
+            stop.clone(),
         ]
     );
-    assert!(!host.state("domain-work"));
-    assert!(!host.state("vol-pm-machine-work.qcow2"));
+    assert!(!host.running("work"));
+
+    host.ok(&["machine", "start", "work"]);
+    let listed = host.ok(&["machine", "list"]);
+    assert!(listed.contains("work\n"), "{listed}");
+    assert!(listed.contains("pm-machine-work.service"), "{listed}");
+    assert!(!listed.contains("templates"), "{listed}");
+    host.calls();
+
+    host.ok(&["machine", "remove", "work"]);
+    assert_eq!(host.calls(), [running, stop]);
+    assert!(!host.machines("work").exists());
+    assert!(!host.machines("work.conf").exists());
     // The template stays for the next machine.
-    template_volume(&host);
+    template_file(&host);
 }
 
 #[test]
@@ -315,7 +321,7 @@ fn a_windows_machine_installs_from_its_cd_and_the_hosts_drivers() {
         "red",
     ];
     // Without the host's drivers CD, Windows Setup would find no disk to install
-    // on, so pm stops before asking anything of libvirt.
+    // on, so pm stops before asking anything of the plugin.
     let output = host.pm(&args, None);
     assert!(!output.status.success());
     let error = String::from_utf8_lossy(&output.stderr);
@@ -329,62 +335,45 @@ fn a_windows_machine_installs_from_its_cd_and_the_hosts_drivers() {
     )
     .expect("install the host's drivers CD");
     host.ok(&args);
-    let calls = host.calls();
-    let uploads: Vec<&str> = calls
-        .iter()
-        .filter_map(|call| call.strip_prefix("vol-upload --pool default "))
-        .collect();
-    assert_eq!(uploads.len(), 2, "{calls:?}");
-    assert!(uploads[0].starts_with("pm-media-win11-"), "{uploads:?}");
-    assert!(
-        uploads[1].starts_with("pm-media-windows-tools-"),
-        "{uploads:?}"
-    );
     // Windows 11's least: 64 GiB of disk, with nothing under it.
-    assert!(
-        calls.contains(
-            &"vol-create-as default pm-machine-win.qcow2 68719476736B --format qcow2".to_owned()
-        ),
-        "{calls:?}"
+    assert_eq!(
+        host.calls(),
+        ["qemu-img create -q -f qcow2 $M/win/disk.qcow2 68719476736"]
     );
-    let domain = read_to_string(host.path("state/domain-win")).expect("the machine is defined");
+    let cds = || -> Vec<String> {
+        let mut cds: Vec<String> = fs::read_dir(host.machines("cds"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        cds.sort();
+        cds
+    };
+    let installed = cds();
+    assert_eq!(installed.len(), 2, "{installed:?}");
+    assert!(installed[0].starts_with("win11-"), "{installed:?}");
+    assert!(installed[1].starts_with("windows-tools-"), "{installed:?}");
+    let conf = read_to_string(host.machines("win.conf")).unwrap();
     for expected in [
-        "<memory unit='MiB'>4096</memory>",
-        "<pm:system>windows</pm:system>",
-        "<pm:label>red</pm:label>",
-        "<tpm model='tpm-crb'>",
+        "ram='4096M'",
+        "guest_os='windows'",
+        "tpm='on'",
+        "iso='",
+        "fixed_iso='",
     ] {
-        assert!(domain.contains(expected), "{expected} in\n{domain}");
+        assert!(conf.contains(expected), "{expected} in\n{conf}");
     }
+    let record = read_to_string(host.machines("win/machine.json")).unwrap();
+    assert!(record.contains("\"system\": \"windows\""), "{record}");
+    assert!(record.contains("\"label\": \"red\""), "{record}");
 
-    // A second machine from the same CDs uploads neither again, and removing
+    // A second machine from the same CDs copies neither again, and removing
     // one leaves them for the other.
     let mut second = args;
     second[2] = "win2";
     host.ok(&second);
-    assert!(
-        !host
-            .calls()
-            .iter()
-            .any(|call| call.starts_with("vol-upload")),
-        "the CDs were uploaded again"
-    );
     host.ok(&["machine", "remove", "win"]);
-    assert!(host.state("domain-win2"));
-    assert!(
-        fs::read_dir(host.path("state"))
-            .unwrap()
-            .filter(|entry| {
-                entry
-                    .as_ref()
-                    .unwrap()
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with("vol-pm-media-")
-            })
-            .count()
-            == 2
-    );
+    assert!(host.machines("win2.conf").exists());
+    assert_eq!(cds(), installed);
 }
 
 #[test]
@@ -421,92 +410,9 @@ fn names_no_machine_could_have_are_refused_before_any_plugin_sees_them() {
 #[test]
 fn without_a_plugin_that_manages_machines_pm_says_what_is_missing() {
     let host = Host::new();
-    fs::remove_file(host.path("plugins/libvirt.wasm")).unwrap();
+    fs::remove_file(host.path("plugins/quickemu.wasm")).unwrap();
     let output = host.pm(&["machine", "list"], None);
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("no plugin manages machines"), "{stderr}");
-}
-
-/// Against a real libvirt: make a machine from a tiny qcow2, check libvirt has it
-/// with its label, and remove it again, template and all.
-#[test]
-#[ignore = "needs virsh, qemu-img and a libvirt daemon with a default pool"]
-fn a_real_libvirt_gets_the_machine() {
-    let root = tempdir().unwrap();
-    let plugins = root.path().join("plugins");
-    create_dir_all(&plugins).unwrap();
-    fs::copy(
-        Path::new(env!("PM_TEST_PLUGIN_DIR")).join("libvirt.wasm"),
-        plugins.join("libvirt.wasm"),
-    )
-    .unwrap();
-    let image = root.path().join("pm-test-template.qcow2");
-    let made = Command::new("qemu-img")
-        .args(["create", "-f", "qcow2"])
-        .arg(&image)
-        .arg("64M")
-        .status()
-        .unwrap();
-    assert!(made.success());
-
-    let pm = |args: &[&str]| {
-        let output = Command::new(env!("CARGO_BIN_EXE_pm"))
-            .arg("--plugin-dir")
-            .arg(&plugins)
-            .arg("--allow-unsigned-plugins")
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "pm {args:?}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    };
-    let name = format!("pm-test-{}", std::process::id());
-    pm(&[
-        "machine",
-        "create",
-        &name,
-        "--image",
-        image.to_str().unwrap(),
-        "--label",
-        "purple",
-        "--memory",
-        "256",
-        "--cpus",
-        "1",
-        "--disk",
-        "1",
-    ]);
-    let xml = Command::new("virsh")
-        .args(["dumpxml", &name])
-        .output()
-        .unwrap();
-    let xml = String::from_utf8_lossy(&xml.stdout);
-    pm(&["machine", "remove", &name]);
-
-    assert!(xml.contains("<pm:label>purple</pm:label>"), "{xml}");
-    assert!(xml.contains("pm-machine-"), "{xml}");
-    let volumes = Command::new("virsh")
-        .args(["vol-list", "default"])
-        .output()
-        .unwrap();
-    let volumes = String::from_utf8_lossy(&volumes.stdout);
-    assert!(
-        !volumes.contains(&format!("pm-machine-{name}")),
-        "{volumes}"
-    );
-    let template = volumes
-        .split_whitespace()
-        .find(|word| {
-            word.starts_with("pm-test-template") || word.starts_with("pm-template-pm-test-template")
-        })
-        .map(str::to_owned);
-    if let Some(template) = template {
-        let _ = Command::new("virsh")
-            .args(["vol-delete", "--pool", "default", &template])
-            .status();
-    }
 }
