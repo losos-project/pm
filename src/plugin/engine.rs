@@ -54,8 +54,9 @@ use wasmtime::{
 };
 
 use super::wit::{
-    Bindings, LogHost, TypesHost, WitLevel, bundled::BundledBindings, machines::MachineBindings,
-    recipe::RecipeBindings, vm::VmBindings,
+    Bindings, LogHost, TypesHost, WitLevel, bundled::BundledBindings,
+    containers::ContainerBindings, machines::MachineBindings, recipe::RecipeBindings,
+    vm::VmBindings,
 };
 
 /// Instructions one call may execute before it traps.
@@ -288,6 +289,33 @@ impl Runtime {
     /// [`Runtime::enter_machine`] can instantiate it.
     pub(super) fn has_machine_plan(component: &Component) -> bool {
         Self::has_launchers(component) && component.get_export_index(None, "machine-plan").is_some()
+    }
+
+    /// [`Runtime::enter`] for a plugin built against the `container-plugin` world, to
+    /// call the export that world adds.
+    ///
+    /// # Errors
+    ///
+    /// As [`Runtime::enter`].
+    pub(super) fn enter_container<T>(
+        &self,
+        plugin: &str,
+        component: &Component,
+        call: impl FnOnce(&ContainerBindings, &mut Store<State>) -> wasmtime::Result<T>,
+    ) -> Result<T> {
+        self.enter_as(
+            plugin,
+            component,
+            |store, component, linker| ContainerBindings::instantiate(store, component, linker),
+            call,
+        )
+    }
+
+    /// Whether `component` exports what the `container-plugin` world adds, so
+    /// [`Runtime::enter_container`] can instantiate it.
+    pub(super) fn has_container_plan(component: &Component) -> bool {
+        Self::has_launchers(component)
+            && component.get_export_index(None, "container-plan").is_some()
     }
 
     fn enter_as<B, T>(

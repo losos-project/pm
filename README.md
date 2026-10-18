@@ -245,11 +245,38 @@ A distribution installs what the daemon needs from `data/`: the D-Bus policy tha
 lets only `pm` own `org.pm1.System`, the activation file that hands the bus over
 to `pm-system.service`, and the polkit actions, which name `pm` as their owner so
 an unprivileged daemon may ask polkit about other people. It supplies the rest
-itself: the `pm` user, `pm-system.service` running `pmd --system` as that user
-with `/run/current-system/sw/bin` or its own system `PATH`, and a polkit rule
-letting `pm` manage units. That rule makes `pm` as trusted as root, as run0 was,
+itself: the `pm` user, `pm-system.service` running `pmd --system` as that user,
+and a polkit rule letting `pm` manage units, all but any unit that is a root
+shell by another name, such as `debug-shell.service`. That rule makes `pm` as trusted as root, as run0 was,
 so a distribution that gives it should keep anyone else from managing units
 directly, or `pm system` is only one way in of several.
+
+## Containers
+
+`pm container` runs your own containers, as you, from compose files:
+
+```sh
+pm container up compose.yml      # make and start what it describes
+pm container create compose.yml  # make it, left stopped
+pm container list
+pm container status web          # created, running, paused, exited
+pm container ports web
+pm container stop web            # also start, pause, unpause
+pm container remove web
+pm container down compose.yml    # stop and remove what it describes
+pm container version
+```
+
+Root has none: a container of root's would run with the whole system's
+privilege, so root's requests are refused. As with machines, pm does none of it
+itself. The first installed plugin built against the `container-plugin` world
+turns each request into steps and pm runs them, held to the programs the plugin
+listed - see "Managing containers" in `plugins/README.md`. The `podman` plugin
+(`plugins/podman/`) makes them rootless Podman's, with podman-compose for compose
+files: no daemon, and the containers, their images and their state in your
+home. Names are 1-64 characters of letters, digits, `_`, `.` and `-`, starting
+with a letter or a digit, and a compose file must exist; both are checked before
+any plugin sees them.
 
 ## Integration with distribution build tools
 

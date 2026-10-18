@@ -10,6 +10,8 @@
 pub mod bf;
 /// A best-effort cancellation token threaded through a build.
 pub use pm_cancel as cancel;
+/// Each user's own containers, for `pm container`.
+pub mod container;
 /// The caller-supplied environment a build runs against, instead of the
 /// process's own cwd, `$PATH` and `$HOME`.
 pub mod context;

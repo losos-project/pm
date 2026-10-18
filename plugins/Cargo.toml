@@ -7,7 +7,7 @@
 # embedded in the executable.
 [workspace]
 resolver = "3"
-members = ["encoder", "unitfile", "fixtures/*", "libvirt", "quickemu", "systemd", "sysext", "sysupdate", "zig", "bundled/*"]
+members = ["encoder", "unitfile", "fixtures/*", "libvirt", "podman", "quickemu", "systemd", "sysext", "sysupdate", "zig", "bundled/*"]
 exclude = ["vendor"]
 # `fixtures/wasi` is built for wasm32-wasip2 rather than wasm32-unknown-unknown; see
 # build.sh. It is a member like the rest so `cargo check` covers it.
