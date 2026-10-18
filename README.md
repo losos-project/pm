@@ -213,8 +213,13 @@ it, `machine.json`, with its label, its vsock address (not for Windows) and what
 it was made from; a CD is copied in under `cds/`. A machine runs as the service
 `pm-machine-<name>` of your own service manager, on the host's `virbr0` bridge
 when it has one, with QEMU's guest agent and its screen on sockets in its
-folder. Names are 1-32 characters of `a-z`, `0-9` and `-`, starting with a
-letter, checked before any plugin sees them.
+folder. The `libvirt` plugin (`plugins/libvirt/`) makes them libvirt's
+instead: domains of the daemon at libvirt's default URI, their disks in its
+`default` storage pool, on its `default` network, so virsh and virt-manager see
+the machines pm made, and every user who may manage that daemon sees the same
+ones. With both installed, `libvirt` answers, being first by file name. Names
+are 1-32 characters of `a-z`, `0-9` and `-`, starting with a letter, checked
+before any plugin sees them.
 
 ## Administering the machine
 
