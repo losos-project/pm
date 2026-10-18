@@ -22,13 +22,15 @@ use tracing::warn;
 use super::{
     Hook, Manifest, RecipeFunction, RecipeValue, Symbol,
     wit::{
-        WitCapability, WitDiskFormat, WitFirmware, WitGrant, WitGuestSystem, WitHook, WitLaunch,
-        WitMachine, WitMachineInstaller, WitMachineLabel, WitMachineMedia, WitMachinePlace,
-        WitMachineRequest, WitMachineSource, WitMachineSpec, WitMachineStep, WitMachineTemplate,
-        WitManifest, WitPermission, WitRecipeFunction, WitRecipeValue, WitSymbol, WitVerdict,
+        WitCapability, WitContainerPlace, WitContainerRequest, WitDiskFormat, WitFirmware,
+        WitGrant, WitGuestSystem, WitHook, WitLaunch, WitMachine, WitMachineInstaller,
+        WitMachineLabel, WitMachineMedia, WitMachinePlace, WitMachineRequest, WitMachineSource,
+        WitMachineSpec, WitMachineStep, WitMachineTemplate, WitManifest, WitPermission,
+        WitRecipeFunction, WitRecipeValue, WitSymbol, WitVerdict,
     },
 };
 use crate::{
+    container::{Place as ContainerPlace, Request as ContainerRequest},
     machine::{
         DiskFormat, Firmware, Label, Media, Place, Request, Source, Spec, Step, System, Template,
     },
@@ -154,6 +156,7 @@ pub(super) fn manifest(from: WitManifest, file: &str) -> Result<Manifest, String
         recipe_functions: BTreeMap::new(),
         launchers: BTreeSet::new(),
         manages_machines: false,
+        manages_containers: false,
     })
 }
 
@@ -612,6 +615,34 @@ pub(super) fn machine_request(from: &Request) -> WitMachineRequest {
         Request::Stop(name) => WitMachineRequest::Stop(name.clone()),
         Request::Kill(name) => WitMachineRequest::Kill(name.clone()),
         Request::Remove(name) => WitMachineRequest::Remove(name.clone()),
+    }
+}
+
+/// A request about the asking user's containers as the `container-plugin` world
+/// spells it. pm checked every name and made every file absolute, and an absolute
+/// path pm found is UTF-8 ([`crate::container::compose_file`]).
+pub(super) fn container_request(from: &ContainerRequest) -> WitContainerRequest {
+    let file = |path: &std::path::Path| path.to_string_lossy().into_owned();
+    match from {
+        ContainerRequest::List => WitContainerRequest::List,
+        ContainerRequest::Status(name) => WitContainerRequest::Status(name.clone()),
+        ContainerRequest::Ports(name) => WitContainerRequest::Ports(name.clone()),
+        ContainerRequest::Up(path) => WitContainerRequest::Up(file(path)),
+        ContainerRequest::Create(path) => WitContainerRequest::Create(file(path)),
+        ContainerRequest::Down(path) => WitContainerRequest::Down(file(path)),
+        ContainerRequest::Start(name) => WitContainerRequest::Start(name.clone()),
+        ContainerRequest::Stop(name) => WitContainerRequest::Stop(name.clone()),
+        ContainerRequest::Pause(name) => WitContainerRequest::Pause(name.clone()),
+        ContainerRequest::Unpause(name) => WitContainerRequest::Unpause(name.clone()),
+        ContainerRequest::Remove(name) => WitContainerRequest::Remove(name.clone()),
+        ContainerRequest::Version => WitContainerRequest::Version,
+    }
+}
+
+/// Whose containers a request is about, as the `container-plugin` world spells it.
+pub(super) const fn container_place(from: &ContainerPlace) -> WitContainerPlace {
+    WitContainerPlace {
+        rootless: from.rootless,
     }
 }
 

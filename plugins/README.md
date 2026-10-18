@@ -254,6 +254,31 @@ and `.conf`, leaving the template and the CDs other machines may share.
 `libvirt/`, which managed machines as libvirt domains before, now only boots
 packages' kernels.
 
+## Managing containers
+
+A plugin built against the **`container-plugin`** world runs the containers of
+the user pm runs as, for `pm container`. It is a `vm-plugin` - `launchers`
+again, printed by `pm plugins` with `containers: yes` - plus one call:
+
+```wit
+export container-plan: func(request: container-request, place: container-place) -> result<list<machine-step>, string>;
+```
+
+The place says whether that user is anyone but root. A request is `list`,
+`version`, `up`, `create` or `down` of a compose file by its absolute path, or
+`status`, `ports`, `start`, `stop`, `pause`, `unpause` or `remove` of a
+container by name; pm checks the name and that the file exists before asking.
+The answer is steps, the same `machine-step`s a machine plugin answers with,
+and pm runs them the same way: conditions first, then the steps in order with
+pm's standard output and error, undoing what finished when one fails. What a
+step prints is the answer to `list`, `status`, `ports` and `version`. Only the
+first plugin that manages containers is asked.
+
+`podman/` is the example, and refuses root. Each request is one step: Podman's
+own command (`ps`, `inspect`, `port`, `container start` and so on, the name
+after `--`) or podman-compose's for a compose file, `version` both programs'
+`--version`.
+
 ## Trust
 
 **A plugin must be signed**, by a key in the same trust store that governs build
@@ -338,6 +363,7 @@ Rust-specific; Rust is simply what these examples are written in.
 | `sysext/`     | classifies the system-extension image toolchain; one hook, on purpose     |
 | `libvirt/`    | boots a package's kernel through libvirt, via `virsh`                     |
 | `quickemu/`   | manages each user's `pm machine`s with quickemu, as services of their own |
+| `podman/`     | runs each user's `pm container`s with rootless Podman and podman-compose  |
 | `unitfile/`   | the unit-file parser the three systemd plugins share - an ordinary lib    |
 | `encoder/`    | core module → component, so `build.sh` needs no `cargo install`           |
 | `fixtures/*`  | deliberately badly behaved plugins, for `tests/plugins.rs`                |

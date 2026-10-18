@@ -609,8 +609,19 @@ pub trait Manager {
 pub fn carry_out(manager: &dyn Manager, request: &Request) -> miette::Result<()> {
     let place = Place::for_this_user()?;
     let steps = manager.steps(request, &place)?;
+    run_steps(&steps, &request.describe())
+}
+
+/// Run a plugin's `steps` for the request `what` describes, as [`carry_out`] says:
+/// every condition first, then the steps in order, undoing the finished ones if a
+/// later one fails. `pm container` runs its plugin's steps the same way.
+///
+/// # Errors
+///
+/// A program is missing, or a step failed.
+pub(crate) fn run_steps(steps: &[Step], what: &str) -> miette::Result<()> {
     let scratch = tempfile::Builder::new()
-        .prefix("pm-machine-")
+        .prefix("pm-request-")
         .tempdir()
         .into_diagnostic()
         .wrap_err("cannot make a directory for the request's files")?;
@@ -632,7 +643,7 @@ pub fn carry_out(manager: &dyn Manager, request: &Request) -> miette::Result<()>
         Ok(answer)
     };
     let mut plan = Vec::with_capacity(steps.len());
-    for step in &steps {
+    for step in steps {
         let wanted = match &step.when {
             Some(probe) => ask(&mut runner, probe)?,
             None => true,
@@ -664,8 +675,14 @@ pub fn carry_out(manager: &dyn Manager, request: &Request) -> miette::Result<()>
                     );
                 }
             }
-            return Err(error)
-                .wrap_err_with(|| format!("cannot {}: {}", request.describe(), step.summary));
+            // A request of one step is often summed up as that step is.
+            return Err(error).wrap_err_with(|| {
+                if step.summary == what {
+                    format!("cannot {what}")
+                } else {
+                    format!("cannot {what}: {}", step.summary)
+                }
+            });
         }
         done.push(step);
     }
@@ -696,8 +713,8 @@ impl Runner<'_> {
             let name = launch.program.to_string_lossy();
             find_on_path(&name).ok_or_else(|| {
                 miette!(
-                    help = "install it, or install a different plugin to manage machines",
-                    "{} manages machines with {name}, which is not on PATH",
+                    help = "install it, or install a different plugin to do this",
+                    "{} runs {name}, which is not on PATH",
                     launch.by
                 )
             })?

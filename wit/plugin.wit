@@ -397,6 +397,50 @@ interface types {
         undo: option<launch>,
     }
 
+    /// Whose containers a request is about, and what a plugin cannot find out for
+    /// itself. Like machines, every user's containers are their own: pm asks on behalf
+    /// of one user, and the plugin plans for that user's containers alone.
+    record container-place {
+        /// Whether that user is not root, so their containers run rootless, in user
+        /// namespaces of their own, with no daemon and no privilege beyond theirs. A
+        /// plugin may refuse root's, and pm's podman plugin does.
+        rootless: bool,
+    }
+
+    /// Something to do to the containers of whoever asks.
+    ///
+    /// Every name has been checked by pm: 1-64 characters of `[a-zA-Z0-9_.-]`,
+    /// starting with a letter or digit. Every file is an absolute path to a file that
+    /// existed when pm was asked.
+    variant container-request {
+        /// Print the name of every container, running or not, one to a line.
+        %list,
+        /// Print the named container's state, as the runtime names it: `running`,
+        /// `exited`, `paused` and so on.
+        status(string),
+        /// Print the named container's published ports, one to a line, as
+        /// `<container port>/<protocol> -> <host address>:<host port>`.
+        ports(string),
+        /// Make and start what a compose file describes, in the background.
+        up(string),
+        /// Make what a compose file describes and leave it stopped.
+        create(string),
+        /// Stop and remove what a compose file describes. Named volumes stay.
+        down(string),
+        /// Start the named container.
+        start(string),
+        /// Stop the named container, letting it shut down in its own time.
+        stop(string),
+        /// Pause the named container.
+        pause(string),
+        /// Resume the paused container.
+        unpause(string),
+        /// Remove the named container, which has to be stopped.
+        remove(string),
+        /// Print the versions of the programs that run containers.
+        version,
+    }
+
     /// A hook a plugin implements.
     ///
     /// pm calls a hook only if the manifest lists it. The exports are all
@@ -567,4 +611,20 @@ world machine-plugin {
     /// hypervisor daemon's, wherever the plugin put it. A plugin that still exports
     /// that is not one pm asks about machines.
     export machine-plan: func(request: machine-request, place: machine-place) -> result<list<machine-step>, string>;
+}
+
+/// The world of a plugin that manages each user's containers, for `pm container`.
+///
+/// Everything `vm-plugin` exports, plus the one call that turns a request into the
+/// steps that carry it out. pm runs them exactly as it runs a `machine-plugin`'s,
+/// held to the same `launchers`: the plugin reaches nothing, and the most it can make
+/// pm execute is what `pm plugins` printed.
+world container-plugin {
+    include vm-plugin;
+
+    use types.{container-request, container-place, machine-step};
+
+    /// The steps that carry `request` out for the user `place` describes, in order.
+    /// An error refuses the request with the plugin's message, before anything runs.
+    export container-plan: func(request: container-request, place: container-place) -> result<list<machine-step>, string>;
 }
