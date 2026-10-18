@@ -59,6 +59,7 @@ arbitrary = { version = "1.4.2", features = ["derive"] }
 clap = { version = "4.6.6", features = ["derive"] }
 dialoguer = "0.12.0"
 either = { version = "1.18.0", features = ["serde"] }
+futures-lite = "2.6.1"
 hakoniwa = { version = "1.8.0", features = ["landlock"] }
 lsp-server = "0.10.0"
 lsp-types = "0.97.0"
@@ -102,6 +103,7 @@ arbitrary.workspace = true
 clap.workspace = true
 dialoguer.workspace = true
 either.workspace = true
+futures-lite.workspace = true
 hakoniwa.workspace = true
 lsp-server.workspace = true
 lsp-types.workspace = true

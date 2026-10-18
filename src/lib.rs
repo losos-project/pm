@@ -49,6 +49,9 @@ pub use pm_signing as signing;
 pub mod star;
 /// Individual build steps and their stages.
 pub mod step;
+/// `pm system`: administering the machine through `pmd --system`, which runs
+/// as the `pm` user and asks polkit about every caller.
+pub mod system;
 /// Small text-formatting helpers shared by the library and the binaries.
 pub use pm_text as text;
 /// Packages that ship their own kernel, booted in a virtual machine.

@@ -7,6 +7,10 @@
 //! anywhere in this task, and this binary does not yet own `org.pm1` or
 //! bind a session bus name at all - that lands in a later task, once the
 //! worker this one calls into is trustworthy on its own.
+//!
+//! `pmd --system` is the other daemon, unrelated to jobs: `org.pm1.System`
+//! on the system bus, run as the `pm` user, which `pm system` asks to
+//! administer the machine. See [`pm::system`].
 
 use std::os::fd::RawFd;
 
@@ -14,6 +18,7 @@ use clap::Parser;
 use miette::{IntoDiagnostic, WrapErr};
 use nix::{sys::prctl, sys::signal::Signal, unistd::getppid};
 use pm::daemon::worker;
+use tracing_subscriber::EnvFilter;
 
 /// `pmd`'s command line.
 ///
@@ -33,9 +38,30 @@ struct Args {
     /// on. Meaningless without `--worker`.
     #[arg(long)]
     fd: Option<RawFd>,
+    /// Serve `org.pm1.System` on the system bus, as the `pm` user.
+    #[arg(long, conflicts_with_all = ["worker", "fd"])]
+    system: bool,
 }
 
 fn main() -> miette::Result<()> {
+    // The system daemon is started by systemd, not forked by a supervisor, so
+    // none of the worker's parent-death handling below applies to it.
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == "--system")
+    {
+        let args = Args::parse();
+        debug_assert!(args.system);
+        // Its log is the journal's, which stamps each line itself.
+        tracing_subscriber::fmt()
+            .without_time()
+            .with_env_filter(
+                EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+            )
+            .init();
+        return pm::system::daemon::serve();
+    }
+
     // Before ANYTHING else - even argument parsing - see this module's docs
     // and design section 7, invariant 2: the window this closes is between
     // our parent's `fork` and this call, and every instruction that runs
