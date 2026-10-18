@@ -23,7 +23,7 @@ cd "$here"
 
 target=wasm32-unknown-unknown
 out="$here/dist"
-crates=${*:-"libvirt quickemu systemd sysext sysupdate zig greedy runaway nameless scanner launcher"}
+crates=${*:-"libvirt podman quickemu systemd sysext sysupdate zig greedy runaway nameless scanner launcher"}
 
 mkdir -p "$out"
 cargo build --release --target "$target" $(for c in $crates; do echo "-p $c"; done)

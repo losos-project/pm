@@ -216,6 +216,33 @@ when it has one, with QEMU's guest agent and its screen on sockets in its
 folder. Names are 1-32 characters of `a-z`, `0-9` and `-`, starting with a
 letter, checked before any plugin sees them.
 
+## Containers
+
+`pm container` runs your own containers, as you, from compose files:
+
+```sh
+pm container up compose.yml      # make and start what it describes
+pm container create compose.yml  # make it, left stopped
+pm container list
+pm container status web          # created, running, paused, exited
+pm container ports web
+pm container stop web            # also start, pause, unpause
+pm container remove web
+pm container down compose.yml    # stop and remove what it describes
+pm container version
+```
+
+Root has none: a container of root's would run with the whole system's
+privilege, so root's requests are refused. As with machines, pm does none of it
+itself. The first installed plugin built against the `container-plugin` world
+turns each request into steps and pm runs them, held to the programs the plugin
+listed - see "Managing containers" in `plugins/README.md`. The `podman` plugin
+(`plugins/podman/`) makes them rootless Podman's, with podman-compose for compose
+files: no daemon, and the containers, their images and their state in your
+home. Names are 1-64 characters of letters, digits, `_`, `.` and `-`, starting
+with a letter or a digit, and a compose file must exist; both are checked before
+any plugin sees them.
+
 ## Integration with distribution build tools
 
 Projects such as `dichhead/losos-desktop` generate recipes and assemble system

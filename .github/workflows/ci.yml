@@ -139,10 +139,10 @@ jobs:
       # TestServer on a local socket, not a real host. --workspace runs the unit
       # tests of the crates under crates/ as well as the root package's suite.
       - run: cargo test --workspace --all-features
-      # The plugins are their own workspace and build for wasm32, but the libvirt
-      # and quickemu plugins' planning is plain Rust: their unit tests run on the
-      # host, against the bindings wit-bindgen generates for them there.
-      - run: cargo test --manifest-path plugins/Cargo.toml -p libvirt -p quickemu
+      # The plugins are their own workspace and build for wasm32, but the libvirt,
+      # quickemu and podman plugins' planning is plain Rust: their unit tests run
+      # on the host, against the bindings wit-bindgen generates for them there.
+      - run: cargo test --manifest-path plugins/Cargo.toml -p libvirt -p quickemu -p podman
 
   sandbox:
     name: "confined tests (userns + landlock)"

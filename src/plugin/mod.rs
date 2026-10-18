@@ -232,6 +232,11 @@ pub struct Manifest {
     /// Only a plugin built against the `machine-plugin` world does. What it may run
     /// for that is still exactly [`Manifest::launchers`].
     pub manages_machines: bool,
+    /// Whether the plugin manages each user's containers for `pm container`.
+    ///
+    /// Only a plugin built against the `container-plugin` world does, and what it may
+    /// run for that is again exactly [`Manifest::launchers`].
+    pub manages_containers: bool,
 }
 
 /// What a [`RecipeFunction`] returns, which decides what a recipe receives.
@@ -1006,6 +1011,49 @@ impl crate::machine::Manager for Registry {
     }
 }
 
+/// A registry manages each user's containers through its first `container-plugin`
+/// plugin, for the reason only the first manages machines: every request about the
+/// same container has to reach the same runtime.
+impl crate::container::Manager for Registry {
+    fn container_steps(
+        &self,
+        request: &crate::container::Request,
+        place: &crate::container::Place,
+    ) -> Result<Vec<crate::machine::Step>> {
+        let plugin = self.runtime.as_ref().zip(
+            self.plugins
+                .iter()
+                .find(|plugin| plugin.manifest.manages_containers),
+        );
+        let Some((runtime, plugin)) = plugin else {
+            return Err(miette!(
+                help = "install and sign a plugin that does, such as pm's podman plugin \
+                        (plugins/README.md, \"Managing containers\")",
+                "no plugin manages containers here, so pm cannot {}",
+                request.describe()
+            ));
+        };
+        let name = &plugin.manifest.name;
+        let offered = convert::container_request(request);
+        let place = convert::container_place(place);
+        let answer = runtime
+            .enter_container(name, &plugin.component, |bindings, store| {
+                bindings.call_container_plan(store, &offered, place)
+            })
+            .wrap_err_with(|| format!("the plugin {name} could not {}", request.describe()))?
+            .map_err(|message| {
+                miette!(
+                    "the plugin {name} refused to {}: {message}",
+                    request.describe()
+                )
+            })?;
+        let steps = convert::machine_steps(answer, name, &plugin.manifest.launchers)
+            .map_err(|reason| miette!("{reason}"))?;
+        debug!(plugin = %name, steps = steps.len(), "a plugin planned the request");
+        Ok(steps)
+    }
+}
+
 fn classify_one(
     runtime: &Runtime,
     plugin: &Plugin,
@@ -1169,6 +1217,7 @@ fn load_one(runtime: &Runtime, path: &Path, trust: Option<&TrustStore>) -> Resul
             .wrap_err_with(|| format!("the plugin {file} could not list its launchers"))?;
         manifest.launchers = convert::launchers(offered, &manifest.name);
         manifest.manages_machines = Runtime::has_machine_plan(&component);
+        manifest.manages_containers = Runtime::has_container_plan(&component);
     }
 
     Ok(Plugin {

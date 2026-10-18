@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 use miette::{IntoDiagnostic, WrapErr, miette};
 use pm::{
     bf::{BuildFile, BuildOptions},
+    container::{self, Request as ContainerRequest, check_container_name, compose_file},
     machine::{
         Firmware, Label, Media, Request as MachineRequest, Source, Spec, System, Template,
         carry_out, check_machine_name, guest_tools, guest_tools_path, host_has_kvm,
@@ -424,6 +425,16 @@ enum Commands {
         #[command(subcommand)]
         command: MachineCommand,
     },
+    /// Run your containers: start, stop and list them, and make them from compose
+    /// files.
+    ///
+    /// They are yours and run as you, rootless. pm does none of this itself: the
+    /// first installed plugin that manages containers, such as podman, decides what
+    /// to run, and pm runs it.
+    Container {
+        #[command(subcommand)]
+        command: ContainerCommand,
+    },
     /// Accept signatures made by a public key from now on.
     ///
     /// Takes the key as hex, or the path to a file holding it - either a `.pub`
@@ -515,6 +526,64 @@ enum MachineCommand {
         /// The machine's name.
         name: String,
     },
+}
+
+#[derive(Subcommand)]
+enum ContainerCommand {
+    /// Print the name of every container, running or not.
+    List,
+    /// Print a container's state: running, exited, paused and so on.
+    Status {
+        /// The container's name.
+        name: String,
+    },
+    /// Print a container's published ports.
+    Ports {
+        /// The container's name.
+        name: String,
+    },
+    /// Make and start what a compose file describes, in the background.
+    Up {
+        /// The compose file.
+        file: PathBuf,
+    },
+    /// Make what a compose file describes and leave it stopped.
+    Create {
+        /// The compose file.
+        file: PathBuf,
+    },
+    /// Stop and remove what a compose file describes. Named volumes stay.
+    Down {
+        /// The compose file.
+        file: PathBuf,
+    },
+    /// Start a container.
+    Start {
+        /// The container's name.
+        name: String,
+    },
+    /// Stop a container, letting it shut down in its own time.
+    Stop {
+        /// The container's name.
+        name: String,
+    },
+    /// Pause a container.
+    Pause {
+        /// The container's name.
+        name: String,
+    },
+    /// Resume a paused container.
+    Unpause {
+        /// The container's name.
+        name: String,
+    },
+    /// Remove a stopped container.
+    Remove {
+        /// The container's name.
+        name: String,
+    },
+    /// Print the versions of what runs containers.
+    Version,
 }
 
 fn main() -> miette::Result<()> {
@@ -674,6 +743,7 @@ fn main() -> miette::Result<()> {
         } => promote(&package, no_sign, unsigned, key, trust_dir)?,
         Commands::Trust { key, trust_dir } => trust(&key, trust_dir)?,
         Commands::Machine { command } => machine(command, &plugin_args.load()?)?,
+        Commands::Container { command } => containers(command, &plugin_args.load()?)?,
     }
 
     Ok(())
@@ -754,6 +824,34 @@ fn machine(command: MachineCommand, plugins: &Registry) -> miette::Result<()> {
         MachineCommand::Remove { name } => MachineRequest::Remove(checked(name)?),
     };
     carry_out(plugins, &request)
+}
+
+/// Carries out a `pm container` subcommand through the plugin that manages
+/// containers.
+///
+/// # Errors
+///
+/// A name or file is not usable, no plugin manages containers, or a step failed.
+fn containers(command: ContainerCommand, plugins: &Registry) -> miette::Result<()> {
+    let name = |name: String| -> miette::Result<String> {
+        check_container_name(&name)?;
+        Ok(name)
+    };
+    let request = match command {
+        ContainerCommand::List => ContainerRequest::List,
+        ContainerCommand::Status { name: n } => ContainerRequest::Status(name(n)?),
+        ContainerCommand::Ports { name: n } => ContainerRequest::Ports(name(n)?),
+        ContainerCommand::Up { file } => ContainerRequest::Up(compose_file(&file)?),
+        ContainerCommand::Create { file } => ContainerRequest::Create(compose_file(&file)?),
+        ContainerCommand::Down { file } => ContainerRequest::Down(compose_file(&file)?),
+        ContainerCommand::Start { name: n } => ContainerRequest::Start(name(n)?),
+        ContainerCommand::Stop { name: n } => ContainerRequest::Stop(name(n)?),
+        ContainerCommand::Pause { name: n } => ContainerRequest::Pause(name(n)?),
+        ContainerCommand::Unpause { name: n } => ContainerRequest::Unpause(name(n)?),
+        ContainerCommand::Remove { name: n } => ContainerRequest::Remove(name(n)?),
+        ContainerCommand::Version => ContainerRequest::Version,
+    };
+    container::carry_out(plugins, &request)
 }
 
 /// `name`, if it can name a machine. Checked before a plugin sees it, so that no
@@ -964,6 +1062,9 @@ fn list_plugins(plugins: &Registry, digests: bool) -> miette::Result<()> {
         }
         if manifest.manages_machines {
             println!("{:<LABEL_WIDTH$}yes", "machines:");
+        }
+        if manifest.manages_containers {
+            println!("{:<LABEL_WIDTH$}yes", "containers:");
         }
         println!("{:<LABEL_WIDTH$}{}", "file:", plugin.path().display());
         if digests {
