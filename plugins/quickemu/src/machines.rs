@@ -711,6 +711,7 @@ mod tests {
             directory: "/home/me/.local/share/pm/machines".into(),
             user_manager,
             random: (0..32).collect(),
+            render_node: None,
         }
     }
 

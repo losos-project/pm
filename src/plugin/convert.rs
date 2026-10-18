@@ -652,6 +652,10 @@ pub(super) fn machine_place(from: &Place) -> WitMachinePlace {
         directory: from.directory.to_string_lossy().into_owned(),
         user_manager: from.user_manager,
         random: from.random.to_vec(),
+        render_node: from
+            .render_node
+            .as_ref()
+            .map(|node| node.to_string_lossy().into_owned()),
     }
 }
 

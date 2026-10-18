@@ -525,6 +525,8 @@ pub struct Place {
     pub user_manager: bool,
     /// Fresh for each request.
     pub random: [u8; 32],
+    /// The host's first GPU render node, if it has a GPU.
+    pub render_node: Option<PathBuf>,
 }
 
 impl Place {
@@ -573,8 +575,25 @@ impl Place {
             directory,
             user_manager: !root,
             random,
+            render_node: first_render_node(Path::new("/dev/dri")),
         })
     }
+}
+
+/// The first render node under `dri`, by name, so the same GPU each time: whatever a
+/// machine's own GPU would render on.
+///
+/// Whether it exists, not whether this process can open it, for the same reason as
+/// [`host_has_kvm`]: the hypervisor that opens it may run as someone else.
+fn first_render_node(dri: &Path) -> Option<PathBuf> {
+    let mut nodes: Vec<PathBuf> = fs::read_dir(dri)
+        .ok()?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with("renderD"))
+        .map(|entry| entry.path())
+        .collect();
+    nodes.sort();
+    nodes.into_iter().next()
 }
 
 /// Something that knows how a hypervisor carries out a [`Request`].
@@ -800,6 +819,20 @@ mod tests {
     use std::io::Write;
 
     use super::*;
+
+    #[test]
+    fn the_first_render_node_by_name_is_the_gpu() {
+        let dri = tempfile::tempdir().unwrap();
+        assert_eq!(first_render_node(dri.path()), None);
+        for name in ["card0", "renderD129", "renderD128"] {
+            File::create(dri.path().join(name)).unwrap();
+        }
+        assert_eq!(
+            first_render_node(dri.path()),
+            Some(dri.path().join("renderD128"))
+        );
+        assert_eq!(first_render_node(&dri.path().join("missing")), None);
+    }
 
     #[test]
     fn a_qcow2_image_has_the_size_its_header_says() {

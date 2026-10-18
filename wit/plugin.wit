@@ -350,6 +350,11 @@ interface types {
         /// own, cannot draw: an identifier, a network card's address, a vsock
         /// address.
         random: list<u8>,
+        /// The host's first GPU render node (`/dev/dri/renderD128`, say), or none
+        /// on a host without a GPU: what a machine's own GPU (VirGL) would render
+        /// on. A plugin that gives a machine one has to give it none here, or the
+        /// machine cannot start.
+        render-node: option<string>,
     }
 
     /// Something to do to the host's machines.

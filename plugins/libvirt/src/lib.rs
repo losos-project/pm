@@ -32,9 +32,10 @@
 //! `default` network, so virsh, virt-manager and a desktop that talks to libvirt see
 //! the same machines pm made.
 //!
-//! Every user who asks reaches those same machines, the daemon's, so the
-//! [`MachinePlace`] pm passes is not used: it is for a plugin like `quickemu`, which
-//! keeps each user's machines in that user's files. With both installed, pm asks the
+//! Every user who asks reaches those same machines, the daemon's, so of the
+//! [`MachinePlace`] pm passes only the host's render node is used, for a machine's
+//! GPU; the rest is for a plugin like `quickemu`, which keeps each user's machines in
+//! that user's files. With both installed, pm asks the
 //! first in file-name order, which is this one.
 //!
 //! The plugin only writes XML and command lines. It reaches nothing: like every pm
@@ -83,12 +84,12 @@ impl Guest for Libvirt {
     }
 
     // libvirt's machines are its daemon's, wherever the person asking keeps their
-    // files, so the place pm gives says nothing this plugin needs.
+    // files, so of the place pm gives only the host's GPU matters here.
     fn machine_plan(
         request: MachineRequest,
-        _place: MachinePlace,
+        place: MachinePlace,
     ) -> Result<Vec<MachineStep>, String> {
-        machines::steps(request)
+        machines::steps(request, place.render_node.as_deref())
     }
 
     fn launch_machine(machine: Machine) -> Result<Option<Launch>, String> {

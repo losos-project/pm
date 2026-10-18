@@ -217,7 +217,9 @@ folder. The `libvirt` plugin (`plugins/libvirt/`) makes them libvirt's
 instead: domains of the daemon at libvirt's default URI, their disks in its
 `default` storage pool, on its `default` network, so virsh and virt-manager see
 the machines pm made, and every user who may manage that daemon sees the same
-ones. With both installed, `libvirt` answers, being first by file name. Names
+ones. On a host with a GPU, a machine made from a template gets one of its own,
+VirGL's, rendering on the host's first render node, which pm finds and passes
+in. With both installed, `libvirt` answers, being first by file name. Names
 are 1-32 characters of `a-z`, `0-9` and `-`, starting with a letter, checked
 before any plugin sees them.
 
