@@ -223,23 +223,23 @@ letter, checked before any plugin sees them.
 ```sh
 pm system restart sshd            # start, stop, restart or reload a unit
 pm system update --reboot         # install the newest system and boot it
-pm system run journalctl -k       # one command as root
-pm system run                     # root's shell
 ```
 
 None of it runs as the caller, and none of it is setuid. `pm` asks `pmd --system`,
 a service on the system bus that runs as its own `pm` user, and the daemon asks
 polkit whether the caller may, letting polkit ask them to authenticate as an
 administrator: through the desktop's agent, or `pkttyagent` on the terminal when
-there is none. Only then does it act, as `pm`, through systemd. A command run as
-root gets a pseudo-terminal of its own in a transient `pm-run-*.service`, which
-`pm` relays this terminal to, and `pm` leaves with its exit status.
+there is none. Only then does it act, as `pm`, through systemd.
+
+That is all it does: it runs no command of the caller's, as root or otherwise,
+and opens no shell. An administrator's session, or whatever takes it over, can
+start and stop the units the system already has and install its updates, and
+nothing more.
 
 | Action | Asked for | Default |
 | --- | --- | --- |
 | `org.pm1.system.manage-units` | start, stop, restart, reload | an administrator, kept a while |
 | `org.pm1.system.update` | update | an administrator, kept a while |
-| `org.pm1.system.run` | run | an administrator, every time |
 
 A distribution installs what the daemon needs from `data/`: the D-Bus policy that
 lets only `pm` own `org.pm1.System`, the activation file that hands the bus over

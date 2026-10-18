@@ -32,16 +32,4 @@
     </defaults>
     <annotate key="org.freedesktop.policykit.owner">unix-user:pm</annotate>
   </action>
-
-  <!-- Never kept: each command run as root is authenticated on its own. -->
-  <action id="org.pm1.system.run">
-    <description>Run a command as root</description>
-    <message>Authentication is required to run $(command) as root.</message>
-    <defaults>
-      <allow_any>auth_admin</allow_any>
-      <allow_inactive>auth_admin</allow_inactive>
-      <allow_active>auth_admin</allow_active>
-    </defaults>
-    <annotate key="org.freedesktop.policykit.owner">unix-user:pm</annotate>
-  </action>
 </policyconfig>

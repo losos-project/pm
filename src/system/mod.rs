@@ -16,10 +16,13 @@
 //!
 //! * starts, stops, restarts and reloads units (`org.pm1.system.manage-units`);
 //! * updates the operating system by starting `systemd-sysupdate.service`, and
-//!   reboots into the update when asked (`org.pm1.system.update`);
-//! * runs one command, or a shell, as root in a transient unit on a terminal
-//!   the caller holds (`org.pm1.system.run`), which is what sudo, su and run0
-//!   were for.
+//!   reboots into the update when asked (`org.pm1.system.update`).
+//!
+//! That is all it does. It runs no command of the caller's, as root or
+//! otherwise, and opens no shell: what sudo, su and run0 did beyond this is
+//! left undone on purpose, so that an administrator's session, or anything
+//! that takes it over, can do no more than start and stop the units the
+//! system already has and install its signed updates.
 //!
 //! The D-Bus policy and polkit actions it needs are in `data/`, and are the
 //! distribution's to install along with a unit that runs `pmd --system` as
@@ -37,17 +40,11 @@ pub const BUS_NAME: &str = "org.pm1.System";
 pub const OBJECT_PATH: &str = "/org/pm1/System";
 /// Its interface.
 pub const INTERFACE: &str = "org.pm1.System";
-/// The signal [`daemon`] sends the caller of `Run`, and only them, once the
-/// command has started, so the client knows the terminal is no longer the
-/// authentication agent's.
-pub const STARTED_SIGNAL: &str = "Started";
 
 /// The polkit action for starting, stopping, restarting and reloading units.
 pub const ACTION_MANAGE_UNITS: &str = "org.pm1.system.manage-units";
 /// The polkit action for updating the system.
 pub const ACTION_UPDATE: &str = "org.pm1.system.update";
-/// The polkit action for running a command as root.
-pub const ACTION_RUN: &str = "org.pm1.system.run";
 
 /// What `Manage` can ask of a unit, as the daemon names it on the bus and to
 /// polkit (`$(verb)` in the action's message).
@@ -116,20 +113,6 @@ pub fn unit_name(name: &str) -> Result<String, String> {
     }
 }
 
-/// The exit status a shell would report for a process that ended as
-/// systemd's `ExecMainCode` and `ExecMainStatus` say: its own status when it
-/// exited, 128 and the signal when one killed it.
-#[must_use]
-pub const fn exit_status(code: i32, status: i32) -> i32 {
-    /// `CLD_EXITED`, from `<signal.h>`.
-    const CLD_EXITED: i32 = 1;
-    if code == CLD_EXITED {
-        status
-    } else {
-        128 + status
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,12 +142,5 @@ mod tests {
             assert_eq!(Verb::from_name(verb.as_str()), Some(verb));
         }
         assert_eq!(Verb::from_name("enable"), None);
-    }
-
-    #[test]
-    fn a_signal_reads_as_a_shell_would_report_it() {
-        assert_eq!(exit_status(1, 3), 3);
-        assert_eq!(exit_status(2, 9), 137);
-        assert_eq!(exit_status(3, 11), 139);
     }
 }

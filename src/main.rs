@@ -425,12 +425,12 @@ enum Commands {
         #[command(subcommand)]
         command: MachineCommand,
     },
-    /// Administer this machine: its services, its updates, and commands run as
-    /// root.
+    /// Administer this machine: its services and its updates.
     ///
     /// pm's system service does the work, as the `pm` user, after polkit has
     /// asked an administrator to authenticate - through the desktop when one is
-    /// running, else on this terminal. This is what sudo, su and run0 were for.
+    /// running, else on this terminal. It runs no command as root and opens no
+    /// shell: starting and stopping units and updating are all it does.
     System {
         #[command(subcommand)]
         command: SystemCommand,
@@ -477,19 +477,6 @@ enum SystemCommand {
         /// nothing newer.
         #[arg(long)]
         reboot: bool,
-    },
-    /// Run a command as root, or root's shell when none is given.
-    ///
-    /// The command gets a terminal of its own, which this one is relayed to,
-    /// and pm leaves with its exit status.
-    Run {
-        /// The command and its arguments.
-        #[arg(
-            trailing_var_arg = true,
-            allow_hyphen_values = true,
-            value_name = "COMMAND"
-        )]
-        command: Vec<String>,
     },
 }
 
@@ -735,9 +722,6 @@ fn main() -> miette::Result<()> {
             SystemCommand::Restart { unit } => pm::system::client::manage(Verb::Restart, &unit)?,
             SystemCommand::Reload { unit } => pm::system::client::manage(Verb::Reload, &unit)?,
             SystemCommand::Update { reboot } => pm::system::client::update(reboot)?,
-            // No guard is live in this frame, so leaving with the command's
-            // status skips nothing that needed dropping.
-            SystemCommand::Run { command } => std::process::exit(pm::system::client::run(command)?),
         },
     }
 
