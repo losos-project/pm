@@ -675,7 +675,14 @@ pub(crate) fn run_steps(steps: &[Step], what: &str) -> miette::Result<()> {
                     );
                 }
             }
-            return Err(error).wrap_err_with(|| format!("cannot {what}: {}", step.summary));
+            // A request of one step is often summed up as that step is.
+            return Err(error).wrap_err_with(|| {
+                if step.summary == what {
+                    format!("cannot {what}")
+                } else {
+                    format!("cannot {what}: {}", step.summary)
+                }
+            });
         }
         done.push(step);
     }
