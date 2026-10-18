@@ -251,8 +251,10 @@ and its disk starts empty. `start` runs `quickemu --vm` in a service of its own
 (`systemd-run`), `stop` has quickemu ask the guest to shut down, `kill` stops
 the service, and `remove` stops it if it runs and deletes the machine's folder
 and `.conf`, leaving the template and the CDs other machines may share.
-`libvirt/`, which managed machines as libvirt domains before, now only boots
-packages' kernels.
+`libvirt/` manages them as libvirt domains instead, the daemon's rather than
+any one user's, so it leaves the place pm passes alone: its steps upload the
+template into libvirt's `default` pool, make the machine's volume on top of it,
+and define the domain, and `start`, `stop`, `kill` and `remove` are `virsh`'s.
 
 ## Managing containers
 
@@ -361,7 +363,7 @@ Rust-specific; Rust is simply what these examples are written in.
 | `systemd/`    | classifies systemd tooling, reads unit files, publishes the install dirs  |
 | `sysupdate/`  | classifies `systemd-sysupdate` and reads its transfer definitions         |
 | `sysext/`     | classifies the system-extension image toolchain; one hook, on purpose     |
-| `libvirt/`    | boots a package's kernel through libvirt, via `virsh`                     |
+| `libvirt/`    | boots a package's kernel and manages `pm machine`s, through `virsh`       |
 | `quickemu/`   | manages each user's `pm machine`s with quickemu, as services of their own |
 | `podman/`     | runs each user's `pm container`s with rootless Podman and podman-compose  |
 | `unitfile/`   | the unit-file parser the three systemd plugins share - an ordinary lib    |
