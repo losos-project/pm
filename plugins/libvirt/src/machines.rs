@@ -46,10 +46,14 @@ const NETWORK: &str = "default";
 /// the label from there to frame the machine's windows.
 pub(crate) const LABEL_NAMESPACE: &str = "https://losos-project.github.io/xmlns/pm-machine/1";
 
-/// The steps that carry `request` out.
-pub(crate) fn steps(request: MachineRequest) -> Result<Vec<MachineStep>, String> {
+/// The steps that carry `request` out, on a host whose first GPU render node is
+/// `render_node`, if it has a GPU.
+pub(crate) fn steps(
+    request: MachineRequest,
+    render_node: Option<&str>,
+) -> Result<Vec<MachineStep>, String> {
     Ok(match request {
-        MachineRequest::Create(spec) => create(&spec)?,
+        MachineRequest::Create(spec) => create(&spec, render_node)?,
         // Not `-q`, which for `list` drops the table's header too.
         MachineRequest::List => vec![step(
             "list the machines",
@@ -104,9 +108,9 @@ pub(crate) fn steps(request: MachineRequest) -> Result<Vec<MachineStep>, String>
 
 /// Install the template or CDs that are not installed, give the machine a disk,
 /// and define the machine.
-fn create(spec: &MachineSpec) -> Result<Vec<MachineStep>, String> {
+fn create(spec: &MachineSpec, render_node: Option<&str>) -> Result<Vec<MachineStep>, String> {
     let disk_volume = format!("pm-machine-{}.qcow2", spec.name);
-    let domain = domain_xml(spec, &disk_volume)?;
+    let domain = domain_xml(spec, &disk_volume, render_node)?;
     let mut steps = Vec::new();
     let make_disk = match &spec.source {
         MachineSource::Template(template) => {
@@ -283,12 +287,18 @@ pub(crate) const fn label_name(label: MachineLabel) -> &'static str {
 ///
 /// A modern PC (q35) on x86-64 and QEMU's `virt` board on arm64, both with UEFI
 /// unless the template boots from a BIOS, and nothing a desktop guest does not use.
-/// A machine made from a template has no graphics card, because its windows reach
-/// the host's desktop over vsock rather than through an emulated screen, and no
-/// USB controller, because nothing is plugged into it until its owner says so. One
-/// that installs from CDs has both: a screen and a tablet to show its installer
-/// with, and to show Windows' whole desktop once it is installed.
-fn domain_xml(spec: &MachineSpec, disk_volume: &str) -> Result<String, String> {
+/// A machine made from a template has no screen, because its windows reach the
+/// host's desktop over vsock rather than through an emulated one, and no USB
+/// controller, because nothing is plugged into it until its owner says so. On a
+/// host with a GPU it has a GPU of its own, VirGL's, which renders its apps'
+/// OpenGL on `render_node`. One that installs from CDs has a screen and a tablet to
+/// show its installer with, and to show Windows' whole desktop once it is
+/// installed.
+fn domain_xml(
+    spec: &MachineSpec,
+    disk_volume: &str,
+    render_node: Option<&str>,
+) -> Result<String, String> {
     let (arch, board) = match spec.arch.as_str() {
         "x86_64" => ("x86_64", "q35"),
         "aarch64" => ("aarch64", "virt"),
@@ -452,11 +462,31 @@ fn domain_xml(spec: &MachineSpec, disk_volume: &str) -> Result<String, String> {
     </video>
     <!-- A USB tablet rather than a virtio one, which Windows Setup has no driver
          for: the pointer is where the host's is, with nothing to capture. -->
-    <input type='tablet' bus='usb'/>",
+    <input type='tablet' bus='usb'/>"
+                .to_owned(),
             "qemu-xhci",
         )
+    } else if let Some(node) = render_node {
+        (
+            format!(
+                "
+    <!-- VirGL: the guest's OpenGL renders on the host's GPU, and its windows
+         reach the desktop over vsock as GPU buffers. No screen to show, so
+         egl-headless rather than SPICE, and no port. -->
+    <graphics type='egl-headless'>
+      <gl rendernode='{}'/>
+    </graphics>
+    <video>
+      <model type='virtio' heads='1' primary='yes'>
+        <acceleration accel3d='yes'/>
+      </model>
+    </video>",
+                escape(node)
+            ),
+            "none",
+        )
     } else {
-        ("", "none")
+        (String::new(), "none")
     };
     Ok(format!(
         "<domain type='{kind}'>
@@ -580,6 +610,11 @@ mod tests {
     use super::*;
     use crate::pm::plugin::types::MachineInstaller;
 
+    /// The steps on a host without a GPU.
+    fn steps(request: MachineRequest) -> Result<Vec<MachineStep>, String> {
+        super::steps(request, None)
+    }
+
     fn spec(arch: &str, kvm: bool, firmware: Firmware) -> MachineSpec {
         MachineSpec {
             name: "work".into(),
@@ -677,6 +712,47 @@ mod tests {
             let body = comment.split("-->").next().unwrap();
             assert!(!body.contains("--"), "{body}");
         }
+    }
+
+    #[test]
+    fn a_template_machine_gets_a_gpu_only_on_a_host_with_one() {
+        let without = steps(MachineRequest::Create(spec("x86_64", true, Firmware::Uefi))).unwrap();
+        let xml = &without[4].run.files[0].contents;
+        for absent in ["<graphics", "<video>", "accel3d"] {
+            assert!(!xml.contains(absent), "{absent} in\n{xml}");
+        }
+
+        let with = super::steps(
+            MachineRequest::Create(spec("x86_64", true, Firmware::Uefi)),
+            Some("/dev/dri/renderD128"),
+        )
+        .unwrap();
+        let xml = &with[4].run.files[0].contents;
+        for expected in [
+            "<graphics type='egl-headless'>",
+            "<gl rendernode='/dev/dri/renderD128'/>",
+            "<acceleration accel3d='yes'/>",
+        ] {
+            assert!(xml.contains(expected), "{expected} in\n{xml}");
+        }
+        // Still no screen to show and nothing on a port.
+        assert!(!xml.contains("spice"), "{xml}");
+        for comment in xml.split("<!--").skip(1) {
+            let body = comment.split("-->").next().unwrap();
+            assert!(!body.contains("--"), "{body}");
+        }
+    }
+
+    #[test]
+    fn a_machine_from_a_cd_keeps_its_screen_with_a_gpu_on_the_host() {
+        let steps = super::steps(
+            MachineRequest::Create(installer(GuestSystem::Windows, true)),
+            Some("/dev/dri/renderD128"),
+        )
+        .unwrap();
+        let xml = &steps.last().unwrap().run.files[0].contents;
+        assert!(xml.contains("<graphics type='spice'>"), "{xml}");
+        assert!(!xml.contains("accel3d"), "{xml}");
     }
 
     #[test]
