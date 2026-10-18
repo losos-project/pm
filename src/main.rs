@@ -21,6 +21,7 @@ use pm::{
     },
     star,
     step::Step,
+    system::Verb,
     text::comma_join,
     workspace::Workspace,
 };
@@ -424,6 +425,16 @@ enum Commands {
         #[command(subcommand)]
         command: MachineCommand,
     },
+    /// Administer this machine: its services, its updates, and commands run as
+    /// root.
+    ///
+    /// pm's system service does the work, as the `pm` user, after polkit has
+    /// asked an administrator to authenticate - through the desktop when one is
+    /// running, else on this terminal. This is what sudo, su and run0 were for.
+    System {
+        #[command(subcommand)]
+        command: SystemCommand,
+    },
     /// Accept signatures made by a public key from now on.
     ///
     /// Takes the key as hex, or the path to a file holding it - either a `.pub`
@@ -435,6 +446,50 @@ enum Commands {
         /// Trust store to add the key to.
         #[arg(long, value_name = "DIR")]
         trust_dir: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum SystemCommand {
+    /// Start a unit; a bare name is a service.
+    Start {
+        /// The unit, such as `sshd` or `fstrim.timer`.
+        unit: String,
+    },
+    /// Stop a unit.
+    Stop {
+        /// The unit.
+        unit: String,
+    },
+    /// Stop a unit if it runs, then start it.
+    Restart {
+        /// The unit.
+        unit: String,
+    },
+    /// Ask a unit to reload its configuration.
+    Reload {
+        /// The unit.
+        unit: String,
+    },
+    /// Install the newest version of the system, for the next boot.
+    Update {
+        /// Reboot into it once it is installed. Nothing reboots when there was
+        /// nothing newer.
+        #[arg(long)]
+        reboot: bool,
+    },
+    /// Run a command as root, or root's shell when none is given.
+    ///
+    /// The command gets a terminal of its own, which this one is relayed to,
+    /// and pm leaves with its exit status.
+    Run {
+        /// The command and its arguments.
+        #[arg(
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            value_name = "COMMAND"
+        )]
+        command: Vec<String>,
     },
 }
 
@@ -674,6 +729,16 @@ fn main() -> miette::Result<()> {
         } => promote(&package, no_sign, unsigned, key, trust_dir)?,
         Commands::Trust { key, trust_dir } => trust(&key, trust_dir)?,
         Commands::Machine { command } => machine(command, &plugin_args.load()?)?,
+        Commands::System { command } => match command {
+            SystemCommand::Start { unit } => pm::system::client::manage(Verb::Start, &unit)?,
+            SystemCommand::Stop { unit } => pm::system::client::manage(Verb::Stop, &unit)?,
+            SystemCommand::Restart { unit } => pm::system::client::manage(Verb::Restart, &unit)?,
+            SystemCommand::Reload { unit } => pm::system::client::manage(Verb::Reload, &unit)?,
+            SystemCommand::Update { reboot } => pm::system::client::update(reboot)?,
+            // No guard is live in this frame, so leaving with the command's
+            // status skips nothing that needed dropping.
+            SystemCommand::Run { command } => std::process::exit(pm::system::client::run(command)?),
+        },
     }
 
     Ok(())

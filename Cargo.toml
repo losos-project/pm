@@ -59,12 +59,13 @@ arbitrary = { version = "1.4.2", features = ["derive"] }
 clap = { version = "4.6.6", features = ["derive"] }
 dialoguer = "0.12.0"
 either = { version = "1.18.0", features = ["serde"] }
+futures-lite = "2.6.1"
 hakoniwa = { version = "1.8.0", features = ["landlock"] }
 lsp-server = "0.10.0"
 lsp-types = "0.97.0"
 miette = "7.6.0"
 minreq = { version = "3.0.0", features = ["https-rustls"] }
-nix = { version = "0.31.3", features = ["fs", "mount", "process", "ptrace", "poll", "reboot", "signal", "term"] }
+nix = { version = "0.31.3", features = ["fs", "mount", "process", "ptrace", "poll", "reboot", "signal", "term", "user"] }
 nom = "8.0.0"
 rayon = "1.12.0"
 rhai = { version = "1.26.1", features = ["grain", "internals", "metadata", "no_custom_syntax", "no_float", "no_time", "only_i64", "serde"] }
@@ -102,6 +103,7 @@ arbitrary.workspace = true
 clap.workspace = true
 dialoguer.workspace = true
 either.workspace = true
+futures-lite.workspace = true
 hakoniwa.workspace = true
 lsp-server.workspace = true
 lsp-types.workspace = true

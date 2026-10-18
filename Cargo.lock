@@ -2406,6 +2406,7 @@ dependencies = [
  "dialoguer",
  "divan",
  "either",
+ "futures-lite",
  "hakoniwa",
  "lsp-server",
  "lsp-types",

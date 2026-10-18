@@ -1,0 +1,6 @@
+# The bus starts pm's system service through systemd, which runs it as pm.
+[D-BUS Service]
+Name=org.pm1.System
+Exec=/bin/false
+User=pm
+SystemdService=pm-system.service

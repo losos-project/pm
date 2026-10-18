@@ -216,6 +216,41 @@ when it has one, with QEMU's guest agent and its screen on sockets in its
 folder. Names are 1-32 characters of `a-z`, `0-9` and `-`, starting with a
 letter, checked before any plugin sees them.
 
+## Administering the machine
+
+`pm system` is how an administrator changes the system without becoming root:
+
+```sh
+pm system restart sshd            # start, stop, restart or reload a unit
+pm system update --reboot         # install the newest system and boot it
+pm system run journalctl -k       # one command as root
+pm system run                     # root's shell
+```
+
+None of it runs as the caller, and none of it is setuid. `pm` asks `pmd --system`,
+a service on the system bus that runs as its own `pm` user, and the daemon asks
+polkit whether the caller may, letting polkit ask them to authenticate as an
+administrator: through the desktop's agent, or `pkttyagent` on the terminal when
+there is none. Only then does it act, as `pm`, through systemd. A command run as
+root gets a pseudo-terminal of its own in a transient `pm-run-*.service`, which
+`pm` relays this terminal to, and `pm` leaves with its exit status.
+
+| Action | Asked for | Default |
+| --- | --- | --- |
+| `org.pm1.system.manage-units` | start, stop, restart, reload | an administrator, kept a while |
+| `org.pm1.system.update` | update | an administrator, kept a while |
+| `org.pm1.system.run` | run | an administrator, every time |
+
+A distribution installs what the daemon needs from `data/`: the D-Bus policy that
+lets only `pm` own `org.pm1.System`, the activation file that hands the bus over
+to `pm-system.service`, and the polkit actions, which name `pm` as their owner so
+an unprivileged daemon may ask polkit about other people. It supplies the rest
+itself: the `pm` user, `pm-system.service` running `pmd --system` as that user
+with `/run/current-system/sw/bin` or its own system `PATH`, and a polkit rule
+letting `pm` manage units. That rule makes `pm` as trusted as root, as run0 was,
+so a distribution that gives it should keep anyone else from managing units
+directly, or `pm system` is only one way in of several.
+
 ## Integration with distribution build tools
 
 Projects such as `dichhead/losos-desktop` generate recipes and assemble system
