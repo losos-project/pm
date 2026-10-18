@@ -453,8 +453,9 @@ fn vsock_address(spec: &MachineSpec, at: &At) -> Option<u32> {
 /// What quickemu would otherwise decide for a desktop of its own is decided here:
 /// its screen is SPICE on a socket in the machine's folder, never on a port, and
 /// quickemu starts no viewer, since the desktop shows the screen when its owner
-/// asks; no folder of the host is shared into it, and no GL, which a host with no
-/// GPU of its own would fail to start the machine for.
+/// asks; no folder of the host is shared into it. A Linux machine draws on the
+/// host's GPU through VirGL whenever the host has one at its start, and in
+/// software when it has none; Windows has no VirGL driver, so it never does.
 fn conf(
     spec: &MachineSpec,
     at: &At,
@@ -511,10 +512,25 @@ fn conf(
         "viewer='none'".into(),
         "public_dir='none'".into(),
         "gl='off'".into(),
+    ];
+    if !windows {
+        lines.extend([
+            // VirGL: the machine's apps draw on the host's GPU, on the first
+            // render node its owner can open, read when the machine starts so a
+            // GPU added or taken away since it was made counts. quickemu would
+            // otherwise ask for GL on a host with no GPU and fail to start it.
+            // `rendernode` is the losos-desktop quickemu's, which upstream
+            // fixes at renderD128.
+            "for node in /dev/dri/renderD*; do".into(),
+            "  [ -r \"$node\" ] && [ -w \"$node\" ] && { gl='on'; rendernode=\"$node\"; break; }".into(),
+            "done".into(),
+        ]);
+    }
+    lines.extend([
         format!("macaddr={}", quote(&mac_address(at))),
         format!("network={}", quote(BRIDGE)),
         format!("[ -d /sys/class/net/{BRIDGE} ] || network=''"),
-    ];
+    ]);
     match origin {
         None => lines.extend([
             // Its sound reaches the host with its windows, not through a card.
@@ -810,6 +826,8 @@ mod tests {
             "viewer='none'",
             "public_dir='none'",
             "gl='off'",
+            "for node in /dev/dri/renderD*; do",
+            "{ gl='on'; rendernode=\"$node\"; break; }",
             "network='virbr0'",
             "[ -d /sys/class/net/virbr0 ] || network=''",
             "sound_card='none'",
@@ -1003,9 +1021,11 @@ mod tests {
         ] {
             assert!(conf.contains(expected), "{expected} in\n{conf}");
         }
-        // No vsock, which Windows has no use for, and a disk quickemu looks at
-        // to know whether to boot the CD.
-        for absent in ["vhost-vsock", "preallocation", "sound_card"] {
+        // No vsock, which Windows has no use for, a disk quickemu looks at to
+        // know whether to boot the CD, and no VirGL, which Windows has no
+        // driver for.
+        assert!(conf.contains("gl='off'"), "{conf}");
+        for absent in ["vhost-vsock", "preallocation", "sound_card", "gl='on'"] {
             assert!(!conf.contains(absent), "{absent} in\n{conf}");
         }
         let record = file(&steps[12]);
@@ -1028,6 +1048,7 @@ mod tests {
         assert!(conf.contains("guest_os='linux'"));
         assert!(conf.contains("tpm='off'"));
         assert!(conf.contains("vhost-vsock-pci"));
+        assert!(conf.contains("{ gl='on'; rendernode=\"$node\"; break; }"));
     }
 
     #[test]
