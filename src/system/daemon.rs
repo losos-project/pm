@@ -542,9 +542,13 @@ fn root_shell() -> String {
 /// Where the program `name` is: itself if it is absolute, under `cwd` if it
 /// is a relative path, else the first match on the daemon's own `PATH`,
 /// which is the one root's command gets.
+///
+/// A path is not looked for: it may be somewhere only root can see, such as
+/// the caller's home, which the daemon is kept out of. systemd reports it
+/// missing when the unit starts.
 fn resolve(name: &str, cwd: &str) -> fdo::Result<PathBuf> {
     let found = if name.contains('/') {
-        Some(Path::new(cwd).join(name)).filter(|path| path.is_absolute() && path.exists())
+        Some(Path::new(cwd).join(name)).filter(|path| path.is_absolute())
     } else {
         env::var_os("PATH").and_then(|path| {
             split_paths(&path)
