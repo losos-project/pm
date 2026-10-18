@@ -522,7 +522,8 @@ fn conf(
             // `rendernode` is the losos-desktop quickemu's, which upstream
             // fixes at renderD128.
             "for node in /dev/dri/renderD*; do".into(),
-            "  [ -r \"$node\" ] && [ -w \"$node\" ] && { gl='on'; rendernode=\"$node\"; break; }".into(),
+            "  [ -r \"$node\" ] && [ -w \"$node\" ] && { gl='on'; rendernode=\"$node\"; break; }"
+                .into(),
             "done".into(),
         ]);
     }
