@@ -6,4 +6,4 @@ publish.workspace = true
 
 [dependencies]
 miette = { version = "7.6.0", features = ["fancy"] }
-wit-component = "0.261.0"
+wit-component = "0.262.0"

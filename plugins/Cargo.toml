@@ -18,7 +18,7 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
-wit-bindgen = { version = "0.62.0", default-features = false, features = ["macros", "realloc"] }
+wit-bindgen = { version = "0.63.0", default-features = false, features = ["macros", "realloc"] }
 unitfile = { path = "unitfile" }
 bundled = { path = "bundled/common" }
 bundled-source = { path = "bundled/source" }
