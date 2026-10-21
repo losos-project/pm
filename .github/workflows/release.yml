@@ -124,7 +124,9 @@ jobs:
             exit 0
           fi
           gh release delete "$GITHUB_REF_NAME" --yes 2>/dev/null || true
-          gh release create "$GITHUB_REF_NAME" --title "pm ${GITHUB_REF_NAME}" --generate-notes dist/*
+          # Only a yearly release is the repository's latest (.github/release).
+          gh release create "$GITHUB_REF_NAME" --title "pm ${GITHUB_REF_NAME}" --generate-notes \
+            --latest=false dist/*
       - name: publish nightly
         if: github.event_name == 'workflow_run'
         env:

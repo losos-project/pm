@@ -110,16 +110,34 @@ case $1 in
     sha=$2 dir=$3
     epoch=$(git show -s --format=%ct "$sha")
     version=$(date -u -d "@$epoch" +%Y%m%d.%H%M%S)
-    # Two commits can land in the same minute, as merges in a row do. A
-    # stamp another commit's nightly holds already moves on a minute, until
-    # one is free or is this commit's own from an earlier run, so every
-    # commit CI passes is released and a re-run still finds its tag.
+    # Two commits can land in the same minute, as merges in a row do, and
+    # their nightlies can run at once. The tag is created first, which
+    # GitHub does for one caller only, so it belongs to this commit before
+    # the release is made on it. A stamp another commit holds moves on a
+    # minute; one this commit holds is its own from an earlier run. Every
+    # commit CI passes is released, and a re-run still finds its tag.
+    stamp=""
     for _ in $(seq 60); do
-      stamp=$(date -u -d "@$epoch" +%Y%m%dT%H%M)
-      held=$(gh api "repos/$GH_REPO/commits/nightly-$stamp" --jq .sha 2>/dev/null) || break
-      [ "$held" = "$sha" ] && break
+      try=$(date -u -d "@$epoch" +%Y%m%dT%H%M)
+      if gh api "repos/$GH_REPO/git/refs" -f "ref=refs/tags/nightly-$try" -f "sha=$sha" > /dev/null 2>&1; then
+        stamp=$try
+        break
+      fi
+      # Not created: either the tag exists, or creating tags is refused.
+      if ! held=$(gh api "repos/$GH_REPO/commits/nightly-$try" --jq .sha 2>/dev/null); then
+        echo "::error::Could not create the tag nightly-$try; a tag ruleset may refuse it to Actions."
+        exit 1
+      fi
+      if [ "$held" = "$sha" ]; then
+        stamp=$try
+        break
+      fi
       epoch=$((epoch + 60))
     done
+    if [ -z "$stamp" ]; then
+      echo "::error::No nightly tag in the hour after $sha's time was free."
+      exit 1
+    fi
     rm -f "$dir/SHA256SUMS"
     ( cd "$dir" && sha256sum -- * > "$work/SHA256SUMS" ) && mv "$work/SHA256SUMS" "$dir/"
     notes="Built from $sha, version \`$version\`, after CI passed on it.
