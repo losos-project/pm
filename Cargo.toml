@@ -132,7 +132,7 @@ zbus.workspace = true
 
 [build-dependencies]
 # Encodes the bundled plugins built by build.rs as components.
-wit-component = "0.261.0"
+wit-component = "0.262.0"
 
 [dev-dependencies]
 divan = "0.1.21"
