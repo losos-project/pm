@@ -51,6 +51,12 @@ jobs:
         github.event.workflow_run.head_branch == github.event.repository.default_branch)
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    # One publisher per commit or tag, so a re-run cannot delete the draft
+    # another run of it is still uploading to. Other commits' nightlies make
+    # other tags and run alongside.
+    concurrency:
+      group: release-${{ github.event.workflow_run.head_sha || github.ref }}
+      cancel-in-progress: false
     permissions:
       contents: write
     steps:
@@ -117,13 +123,17 @@ jobs:
         # Created with its files in one call, which uploads them to a draft
         # and publishes it last, so the release can be immutable; one that
         # is published already is never edited.
+        # Only a lookup that answers isDraft=true deletes anything: a failed
+        # one could hide a published release, which `create` then refuses.
         run: |
           set -euo pipefail
-          if gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft 2>/dev/null | grep -qx false; then
-            echo "::notice::$GITHUB_REF_NAME is already published, and a release is never edited."
-            exit 0
+          if draft=$(gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft 2>/dev/null); then
+            if [ "$draft" != true ]; then
+              echo "::notice::$GITHUB_REF_NAME is already published, and a release is never edited."
+              exit 0
+            fi
+            gh release delete "$GITHUB_REF_NAME" --yes
           fi
-          gh release delete "$GITHUB_REF_NAME" --yes 2>/dev/null || true
           # Only a yearly release is the repository's latest (.github/release).
           gh release create "$GITHUB_REF_NAME" --title "pm ${GITHUB_REF_NAME}" --generate-notes \
             --latest=false dist/*
@@ -139,6 +149,11 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # A dispatched check and the scheduled one would publish the same tags;
+    # one waits. A newer waiting one replacing it does the same work.
+    concurrency:
+      group: cadences
+      cancel-in-progress: false
     permissions:
       contents: write
     steps:
