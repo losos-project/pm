@@ -34,18 +34,25 @@ trap 'rm -rf "$work"' EXIT
 # Learner's Dictionaries, as the OS's releases have. A verb an earlier
 # release of this repository used, read back from the last word of each
 # title after " · ", is not drawn again until every verb has been. The name
-# is a nicety: a dictionary that cannot be reached leaves it out.
+# is a nicety: a dictionary that cannot be reached leaves it out. The list is
+# fetched once per run, within two minutes in all, so a slow site cannot
+# spend the time the releases themselves need.
 release_name() {
-  local words fresh verb adjective
-  if ! words=$(curl --silent --show-error --fail --location --retry 3 --max-time 120 \
-    https://www.oxfordlearnersdictionaries.com/wordlists/oxford3000-5000); then
+  local page fresh verb adjective
+  if ! [ -e "$work/words" ]; then
+    if ! page=$(curl --silent --show-error --fail --location --retry 2 --max-time 40 \
+      --retry-max-time 120 https://www.oxfordlearnersdictionaries.com/wordlists/oxford3000-5000); then
+      page=""
+    fi
+    # The page is one line; every <li> is a headword and its part of speech.
+    grep -oE '<li data-hw="[a-z]+"[^>]*>[^<]*<a [^>]*>[^<]*</a>[^<]*<span class="pos">(verb|adjective)</span>' \
+      <<<"$page" | sed -E 's|<li data-hw="([a-z]+)".*<span class="pos">([a-z]+)</span>|\2 \1|' \
+      | sort -u > "$work/words" || true
+  fi
+  if ! [ -s "$work/words" ]; then
     echo "::warning::The Oxford word list could not be fetched, so this release has no name." >&2
     return 0
   fi
-  # The page is one line; every <li> is a headword and its part of speech.
-  grep -oE '<li data-hw="[a-z]+"[^>]*>[^<]*<a [^>]*>[^<]*</a>[^<]*<span class="pos">(verb|adjective)</span>' \
-    <<<"$words" | sed -E 's|<li data-hw="([a-z]+)".*<span class="pos">([a-z]+)</span>|\2 \1|' \
-    | sort -u > "$work/words"
   gh release list --limit 100000 --json name --jq '.[].name' \
     | sed -nE 's/.* · [A-Za-z]+ ([A-Za-z]+)$/\1/p' | tr '[:upper:]' '[:lower:]' | sort -u > "$work/used"
   # Verbs that have an adjective of their letter.
@@ -101,8 +108,18 @@ case $1 in
   nightly)
     [ $# = 3 ] || { sed -n 's/^#   //p' "$0" >&2; exit 2; }
     sha=$2 dir=$3
-    stamp=$(TZ=UTC0 git show -s --format=%cd --date=format-local:%Y%m%dT%H%M "$sha")
-    version=$(TZ=UTC0 git show -s --format=%cd --date=format-local:%Y%m%d.%H%M%S "$sha")
+    epoch=$(git show -s --format=%ct "$sha")
+    version=$(date -u -d "@$epoch" +%Y%m%d.%H%M%S)
+    # Two commits can land in the same minute, as merges in a row do. A
+    # stamp another commit's nightly holds already moves on a minute, until
+    # one is free or is this commit's own from an earlier run, so every
+    # commit CI passes is released and a re-run still finds its tag.
+    for _ in $(seq 60); do
+      stamp=$(date -u -d "@$epoch" +%Y%m%dT%H%M)
+      held=$(gh api "repos/$GH_REPO/commits/nightly-$stamp" --jq .sha 2>/dev/null) || break
+      [ "$held" = "$sha" ] && break
+      epoch=$((epoch + 60))
+    done
     rm -f "$dir/SHA256SUMS"
     ( cd "$dir" && sha256sum -- * > "$work/SHA256SUMS" ) && mv "$work/SHA256SUMS" "$dir/"
     notes="Built from $sha, version \`$version\`, after CI passed on it.

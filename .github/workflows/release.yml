@@ -51,13 +51,6 @@ jobs:
         github.event.workflow_run.head_branch == github.event.repository.default_branch)
     runs-on: ubuntu-latest
     timeout-minutes: 40
-    # One at a time, so a nightly and a cadence never read the releases
-    # while the other is making one. On the jobs, not the workflow, because
-    # every pull request's ci wakes this workflow too and would take the
-    # group's one waiting place from a release.
-    concurrency:
-      group: releases
-      cancel-in-progress: false
     permissions:
       contents: write
     steps:
@@ -121,15 +114,17 @@ jobs:
         if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # Created with its files in one call, which uploads them to a draft
+        # and publishes it last, so the release can be immutable; one that
+        # is published already is never edited.
         run: |
           set -euo pipefail
-          note="pm ${GITHUB_REF_NAME}"
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release edit "$GITHUB_REF_NAME" --title "$note"
-          else
-            gh release create "$GITHUB_REF_NAME" --title "$note" --generate-notes
+          if gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft 2>/dev/null | grep -qx false; then
+            echo "::notice::$GITHUB_REF_NAME is already published, and a release is never edited."
+            exit 0
           fi
-          gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          gh release delete "$GITHUB_REF_NAME" --yes 2>/dev/null || true
+          gh release create "$GITHUB_REF_NAME" --title "pm ${GITHUB_REF_NAME}" --generate-notes dist/*
       - name: publish nightly
         if: github.event_name == 'workflow_run'
         env:
@@ -142,9 +137,6 @@ jobs:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    concurrency:
-      group: releases
-      cancel-in-progress: false
     permissions:
       contents: write
     steps:
