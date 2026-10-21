@@ -73,7 +73,6 @@ jobs:
           TOKEN: ${{ secrets.LOCKFILE_UPDATE_TOKEN || github.token }}
           HAS_TOKEN: ${{ secrets.LOCKFILE_UPDATE_TOKEN != '' }}
           BASE: ${{ github.event.repository.default_branch }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           # HEAD, because a moved submodule is staged, not just changed.
           if git diff HEAD --quiet; then
@@ -82,8 +81,9 @@ jobs:
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -qam "chore(deps): update lockfiles" -m "$(cat "$RUNNER_TEMP/summary.md")" \
-            -m "Made by the lockfiles workflow: $RUN_URL"
+          # No line naming the run: commits here carry no attribution, and the
+          # run's own summary already lists what moved.
+          git commit -qam "chore(deps): update lockfiles" -m "$(cat "$RUNNER_TEMP/summary.md")"
           auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
           git -c http.extraheader="$auth" fetch --quiet origin "$BASE"
           if ! git rebase --quiet "origin/$BASE"; then
