@@ -373,4 +373,5 @@ is edited once published (`.github/release`). A `v*` tag pushed by hand is
 still released under its own name.
 
 `lockfiles.yml` moves every lockfile to what its manifest allows each Monday
-at 03:00 UTC, as a pull request that merges itself once its checks pass.
+at 03:00 UTC, in one commit pushed straight to the default branch, where
+CI checks it as any other push.
