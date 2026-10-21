@@ -1,15 +1,30 @@
 name: release
 
 on:
+  # A `v*` tag pushed by hand is released under its own name, as before the
+  # cadences.
   push:
     tags:
       - "v*"
+  # A push to master that passes ci is released as a nightly.
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+  # Daily, the minute the OS's own cadence.yml runs, so a weekly release here
+  # is out before the OS's Monday 03:00 lockfile update reads it.
+  schedule:
+    - cron: "17 2 * * *"
   workflow_dispatch:
 
-# Builds the release binaries for the tagged revision and attaches them to the
-# GitHub release for that tag. Until this existed, a `v*` tag produced no
-# artifact at all: ci.yml and rust-clippy.yml only build, test and lint, so the
-# release page stayed empty.
+# Builds the release binaries and attaches them to a GitHub release. Until this
+# existed, a `v*` tag produced no artifact at all: ci.yml and rust-clippy.yml
+# only build, test and lint, so the release page stayed empty.
+#
+# Releases follow the OS's cadences (losos-project/desktop, docs/releases.md,
+# "Release cadences"), through .github/release, which says how tags, titles
+# and names are made: every master commit ci passes is a prerelease,
+# nightly-<YYYYMMDD>T<HHMM>, and `cadences` cuts the weekly, monthly and
+# yearly releases due from the newest nightly, with the same files.
 #
 # Host tools only. pm is a Linux sandbox for recipe builds; its own release
 # artifacts are the first-party binaries Cargo.toml declares (pm, pm-lsp, pm-trace,
@@ -17,7 +32,7 @@ on:
 # tarballs and a GHCR image are deliberately out of scope until the project asks for them.
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -27,10 +42,45 @@ env:
 jobs:
   release:
     name: "build and publish"
+    if: >-
+      github.event_name == 'push' || (
+        github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_repository.full_name == github.repository &&
+        github.event.workflow_run.head_branch == github.event.repository.default_branch)
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    # One at a time, so a nightly and a cadence never read the releases
+    # while the other is making one. On the jobs, not the workflow, because
+    # every pull request's ci wakes this workflow too and would take the
+    # group's one waiting place from a release.
+    concurrency:
+      group: releases
+      cancel-in-progress: false
+    permissions:
+      contents: write
     steps:
+      # A nightly is built from the commit ci passed, with the release script
+      # of the default branch, where this workflow is read from: the full
+      # history of master holds both.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: ${{ github.event_name == 'workflow_run' && '0' || '1' }}
+      - id: commit
+        env:
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = workflow_run ]; then
+            cp .github/release "$RUNNER_TEMP/release"
+            git checkout --quiet --detach "$SHA"
+            name=$(TZ=UTC0 git show -s --format=%cd --date=format-local:%Y%m%d.%H%M%S "$SHA")
+          else
+            name=$GITHUB_REF_NAME
+          fi
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
       # Same toolchain rule as ci.yml: Cargo.toml sets edition = "2024", which an
       # older stable cannot parse, so update rather than trusting the image pin.
       - id: toolchain
@@ -53,18 +103,22 @@ jobs:
           restore-keys: cargo-release-${{ steps.toolchain.outputs.ver }}-
       - name: build release binaries
         run: cargo build --release --locked --all-features
-      # The assets a release carries, named for the tag so two tags cannot
-      # collide, plus a checksum file so a consumer can verify what it got.
+      # The assets a release carries, named for the tag, or for a nightly its
+      # version, so two releases cannot collide, plus a checksum file so a
+      # consumer can verify what it got.
       - name: stage release assets
+        env:
+          NAME: ${{ steps.commit.outputs.name }}
         run: |
           set -euo pipefail
           mkdir -p dist
           for bin in pm pm-lsp pm-trace pm-vm-init pmd; do
-            install -Dm755 "target/release/$bin" "dist/${bin}-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu"
+            install -Dm755 "target/release/$bin" "dist/${bin}-${NAME}-x86_64-unknown-linux-gnu"
           done
           ( cd dist && sha256sum * > SHA256SUMS )
           ls -l dist
       - name: publish release
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -76,3 +130,29 @@ jobs:
             gh release create "$GITHUB_REF_NAME" --title "$note" --generate-notes
           fi
           gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+      - name: publish nightly
+        if: github.event_name == 'workflow_run'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          SHA: ${{ steps.commit.outputs.sha }}
+        run: '"$RUNNER_TEMP/release" nightly "$SHA" dist'
+
+  cadences:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    concurrency:
+      group: releases
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: .github/release
+      - name: cut the releases that are due
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: .github/release cadences
