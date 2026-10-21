@@ -1,22 +1,23 @@
-# Every Monday, the lockfiles move to what their manifests allow now, as one
-# pull request that merges itself once its checks pass.
+# Every Monday, the lockfiles move to what their manifests allow now, in one
+# commit straight to the default branch.
 #
 # `update` runs `cargo update` on every Cargo.lock (which stays within the
-# versions each Cargo.toml allows, and within rust-version), `npm update
-# --package-lock-only` on every package-lock.json. If anything changed it pushes
-# `automation/lockfiles-<date>`, opens a pull request for it and closes the
-# previous week's if that one never merged. `merge` wakes whenever `ci` or
-# clippy's analysis finishes on such a branch, waits for every other check on the same commit,
-# and merges with a merge commit only when all of them passed. Anything less
-# leaves the pull request open, with a comment saying why.
+# versions each Cargo.toml allows, and within rust-version) and `npm update
+# --package-lock-only` on every package-lock.json.
 #
-# Both jobs use LOCKFILE_UPDATE_TOKEN, a fine-grained token with Contents and
-# Pull requests write on this repository. Actions' own token cannot do the
-# job: GitHub starts no workflow for a pull request it opened or a push it
-# made, so neither the pull request's checks nor main's run after the merge
-# would happen, and this organization does not let Actions open pull
-# requests at all. Without the secret, `update` pushes the branch with that
-# token and links the page that opens the pull request by hand.
+# If anything changed, `update` commits the result straight to the default
+# branch, with no pull request: CI's run on that commit is the check, and a
+# lockfile that breaks the build shows there as any other push would. If the
+# branch moved while this ran, the commit is rebased onto it first; a
+# conflict leaves this week's update unpushed and the run red, and running
+# it again starts afresh.
+#
+# The push uses LOCKFILE_UPDATE_TOKEN, a fine-grained token with Contents
+# write on this repository, when there is one: GitHub starts no workflow for
+# a push made with Actions' own token, so CI would not run on the update
+# until the next push. Without the secret it pushes with that token all the
+# same. A branch rule that refuses direct pushes to the default branch has
+# to let the token's owner, or Actions, bypass it.
 name: lockfiles
 
 on:
@@ -24,24 +25,26 @@ on:
     # Monday 03:00 UTC.
     - cron: "0 3 * * 1"
   workflow_dispatch:
-  workflow_run:
-    workflows: [ci, rust-clippy analyze]
-    types: [completed]
 
 permissions:
   contents: read
 
 jobs:
   update:
-    if: github.event_name != 'workflow_run'
     runs-on: ubuntu-24.04
     timeout-minutes: 60
-    # Only for the fallback push without LOCKFILE_UPDATE_TOKEN.
+    # Only for the push without LOCKFILE_UPDATE_TOKEN.
     permissions:
       contents: write
     steps:
+      # The default branch, whatever branch a run by hand was started on:
+      # the commit is rebased onto it and pushed there, so a feature branch's
+      # own commits must not be in it.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with: { persist-credentials: false }
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ github.event.repository.default_branch }}
 
       # Today's stable cargo resolves each lock, as CI builds with.
       - name: Update the lockfiles
@@ -65,117 +68,31 @@ jobs:
           } > "$summary"
           cat "$summary" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Propose them
+      - name: Push them to the default branch
         env:
           TOKEN: ${{ secrets.LOCKFILE_UPDATE_TOKEN || github.token }}
           HAS_TOKEN: ${{ secrets.LOCKFILE_UPDATE_TOKEN != '' }}
-          GH_REPO: ${{ github.repository }}
           BASE: ${{ github.event.repository.default_branch }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          if git diff --quiet; then
+          # HEAD, because a moved submodule is staged, not just changed.
+          if git diff HEAD --quiet; then
             echo "Every lockfile is already current." | tee -a "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          branch="automation/lockfiles-$(date -u +%Y%m%dT%H%M)"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git switch -c "$branch"
-          git commit -qam "chore(deps): update lockfiles" -m "$(cat "$RUNNER_TEMP/summary.md")"
-          git -c http.extraheader="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)" \
-            push origin "HEAD:refs/heads/$branch"
-
+          git commit -qam "chore(deps): update lockfiles" -m "$(cat "$RUNNER_TEMP/summary.md")" \
+            -m "Made by the lockfiles workflow: $RUN_URL"
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          git -c http.extraheader="$auth" fetch --quiet origin "$BASE"
+          if ! git rebase --quiet "origin/$BASE"; then
+            git rebase --abort
+            echo "::error::$BASE changed the same lockfiles while this ran, so the update is not pushed; run the workflow again."
+            exit 1
+          fi
+          git -c http.extraheader="$auth" push origin "HEAD:refs/heads/$BASE"
+          echo "Pushed $(git rev-parse --short HEAD) to $BASE." | tee -a "$GITHUB_STEP_SUMMARY"
           if [ "$HAS_TOKEN" != true ]; then
-            echo "::warning::LOCKFILE_UPDATE_TOKEN is not set, so no pull request was opened for $branch."
-            echo "Open it by hand: $GITHUB_SERVER_URL/$GH_REPO/compare/$BASE...$branch?expand=1" >> "$GITHUB_STEP_SUMMARY"
-            exit 0
+            echo "::warning::LOCKFILE_UPDATE_TOKEN is not set, so the update was pushed with Actions' own token and CI does not run on it until the next push."
           fi
-          export GH_TOKEN=$TOKEN
-          {
-            echo "## Description"
-            echo
-            echo "The weekly lockfile update from [this run]($RUN_URL). It merges itself, with a merge commit, once every check on it passes; otherwise it stays open for a person."
-            echo
-            cat "$RUNNER_TEMP/summary.md"
-            echo
-            echo "## Screenshots"
-            echo
-            echo "No visible change."
-            echo
-            echo "## Reviewer notes"
-            echo
-            echo "Made by \`.github/workflows/lockfiles.yml\`. No manifest changed."
-          } > "$RUNNER_TEMP/body.md"
-          url=$(gh pr create --base "$BASE" --head "$branch" \
-            --title "chore(deps): update lockfiles" --body-file "$RUNNER_TEMP/body.md")
-          echo "Opened $url" | tee -a "$GITHUB_STEP_SUMMARY"
-          # A week's update that never merged is replaced, not stacked on.
-          gh pr list --state open --json number,headRefName \
-            --jq ".[] | select(.headRefName | startswith(\"automation/lockfiles-\")) | select(.headRefName != \"$branch\") | .number" |
-            while read -r old; do
-              gh pr close "$old" --delete-branch --comment "Superseded by $url." ||
-                echo "::warning::Could not close #$old."
-            done
-
-  merge:
-    if: >-
-      github.event_name == 'workflow_run' &&
-      github.event.workflow_run.event == 'pull_request' &&
-      startsWith(github.event.workflow_run.head_branch, 'automation/lockfiles-') &&
-      github.event.workflow_run.head_repository.full_name == github.repository
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    # One at a time per branch, so only one merges.
-    concurrency:
-      group: lockfiles-merge-${{ github.event.workflow_run.head_branch }}
-    env:
-      GH_TOKEN: ${{ secrets.LOCKFILE_UPDATE_TOKEN }}
-      GH_REPO: ${{ github.repository }}
-      BRANCH: ${{ github.event.workflow_run.head_branch }}
-      SHA: ${{ github.event.workflow_run.head_sha }}
-    steps:
-      - name: Merge once every check passed
-        run: |
-          if [ -z "$GH_TOKEN" ]; then
-            echo "::warning::LOCKFILE_UPDATE_TOKEN is not set, so $BRANCH is left for a person to merge."
-            exit 0
-          fi
-          pr=$(gh pr list --head "$BRANCH" --state open --json number,headRefOid \
-            --jq ".[] | select(.headRefOid == \"$SHA\") | .number")
-          if [ -z "$pr" ]; then
-            echo "No open pull request has $SHA at its head."
-            exit 0
-          fi
-
-          # Every check on the commit, from any workflow or app, has to
-          # finish first; this run's own jobs are on main's commit, not here.
-          # A check that outlasts the wait is left to the next run a check wakes.
-          for _ in $(seq 15); do
-            gh api --paginate "repos/$GH_REPO/commits/$SHA/check-runs?per_page=100" \
-              --jq '.check_runs[] | [.id, .status, (.conclusion // ""), .name] | @tsv' > checks.tsv
-            awk -F'\t' '$2 != "completed"' checks.tsv | grep -q . || break
-            sleep 60
-          done
-          if awk -F'\t' '$2 != "completed"' checks.tsv | grep -q .; then
-            echo "Checks are still running; the next run a check wakes decides."
-            exit 0
-          fi
-
-          reason=$(awk -F'\t' '$3 !~ /^(success|skipped|neutral)$/ { print "- " $4 ": " $3 }' checks.tsv)
-          if [ -n "$reason" ]; then
-            marker="<!-- lockfiles: $SHA -->"
-            if ! gh pr view "$pr" --json comments --jq '.comments[].body' | grep -qF "$marker"; then
-              printf '%s\nNot merging %s, because:\n\n%s\n' "$marker" "$SHA" "$reason" |
-                gh pr comment "$pr" --body-file -
-            fi
-            echo "Not merging: $reason"
-            exit 0
-          fi
-
-          # The base moved since the branch was cut: bring it in, and the
-          # checks that run on the new head decide again.
-          if [ "$(gh pr view "$pr" --json mergeStateStatus --jq .mergeStateStatus)" = BEHIND ]; then
-            gh pr update-branch "$pr"
-            exit 0
-          fi
-          gh pr merge "$pr" --merge --match-head-commit "$SHA" --delete-branch

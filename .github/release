@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+# Publishes this repository's GitHub releases on the OS's cadences
+# (losos-project/desktop, docs/releases.md, "Release cadences"):
+#
+#   .github/release nightly SHA DIR   publish SHA as nightly-<stamp>, with DIR's files
+#   .github/release cadences          cut each weekly, monthly or yearly release that is due
+#
+# A release's cadence is the prefix of its tag, nightly-, weekly-, monthly-
+# or yearly-<YYYYMMDD>T<HHMM>, and the stamp is the commit's time in UTC, as
+# the version <YYYYMMDD>.<HHMMSS> is. A nightly is a prerelease, made from a
+# commit on the default branch whose CI passed. A slower cadence is due when
+# its newest release came out in an earlier ISO week, month or year than
+# today, or there is none yet; it is then the newest nightly again, the same
+# commit and the same files, under its own tag. Weekly and monthly releases
+# are full releases that never become GitHub's latest; only a yearly one is.
+#
+# Each release is created once and never edited, so the repository can make
+# releases immutable. gh uploads every file to a draft before publishing it,
+# and a re-run finds the tag taken and stops; only a draft an upload left
+# half-way is replaced.
+#
+# Needs GH_TOKEN with contents: write and GH_REPO, as gh reads them; a
+# nightly also needs a checkout that holds SHA.
+set -euo pipefail
+
+[ $# -ge 1 ] || { sed -n 's/^#   //p' "$0" >&2; exit 2; }
+project=${GH_REPO##*/}
+server=${GITHUB_SERVER_URL:-https://github.com}
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+# Each release has a name, an adjective and a verb that start with the same
+# letter ("Quiet Queue"), from the Oxford 3000 and 5000 word lists of Oxford
+# Learner's Dictionaries, as the OS's releases have. A verb an earlier
+# release of this repository used, read back from the last word of each
+# title after " · ", is not drawn again until every verb has been. The name
+# is a nicety: a dictionary that cannot be reached leaves it out. The list is
+# fetched once per run, within two minutes in all, so a slow site cannot
+# spend the time the releases themselves need.
+release_name() {
+  local page fresh verb adjective
+  if ! [ -e "$work/words" ]; then
+    if ! page=$(curl --silent --show-error --fail --location --retry 2 --max-time 40 \
+      --retry-max-time 120 https://www.oxfordlearnersdictionaries.com/wordlists/oxford3000-5000); then
+      page=""
+    fi
+    # The page is one line; every <li> is a headword and its part of speech.
+    grep -oE '<li data-hw="[a-z]+"[^>]*>[^<]*<a [^>]*>[^<]*</a>[^<]*<span class="pos">(verb|adjective)</span>' \
+      <<<"$page" | sed -E 's|<li data-hw="([a-z]+)".*<span class="pos">([a-z]+)</span>|\2 \1|' \
+      | sort -u > "$work/words" || true
+  fi
+  if ! [ -s "$work/words" ]; then
+    echo "::warning::The Oxford word list could not be fetched, so this release has no name." >&2
+    return 0
+  fi
+  gh release list --limit 100000 --json name --jq '.[].name' \
+    | sed -nE 's/.* · [A-Za-z]+ ([A-Za-z]+)$/\1/p' | tr '[:upper:]' '[:lower:]' | sort -u > "$work/used"
+  # Verbs that have an adjective of their letter.
+  awk '$1 == "adjective" { a[substr($2, 1, 1)] = 1 } $1 == "verb" && a[substr($2, 1, 1)] { print $2 }' \
+    "$work/words" | sort -u > "$work/verbs"
+  fresh=$(comm -23 "$work/verbs" "$work/used")
+  if [ -z "$fresh" ]; then
+    echo "::warning::Every verb of the word list has named a release, so one is used again." >&2
+    fresh=$(cat "$work/verbs")
+  fi
+  verb=$(shuf -n 1 <<<"$fresh")
+  adjective=$(awk -v l="${verb:0:1}" '$1 == "adjective" && substr($2, 1, 1) == l { print $2 }' "$work/words" | shuf -n 1)
+  if [ -n "$verb" ] && [ -n "$adjective" ]; then
+    echo " · ${adjective^} ${verb^}"
+  else
+    echo "::warning::The word list had no verb and adjective to name this release with." >&2
+  fi
+}
+
+# Creates TAG at SHA with TITLE, NOTES and DIR's files, unless it exists.
+# The API connection can drop for a moment, so a failed attempt is tried
+# again; a draft it left is deleted first, and a published release means
+# only the answer was lost.
+publish() {
+  local tag=$1 sha=$2 title=$3 notes=$4 dir=$5 kind attempt draft
+  case ${tag%%-*} in
+    nightly) kind=(--prerelease) ;;
+    yearly) kind=(--latest) ;;
+    *) kind=(--latest=false) ;;
+  esac
+  for attempt in 1 2 3; do
+    if draft=$(gh release view "$tag" --json isDraft --jq .isDraft 2>/dev/null); then
+      if [ "$draft" != true ]; then
+        echo "::notice::$tag is already published, and a release is never edited."
+        return 0
+      fi
+      gh release delete "$tag" --yes
+    fi
+    if gh release create "$tag" --target "$sha" --title "$title" "${kind[@]}" \
+      --notes "$notes" "$dir"/*; then
+      echo "- Published [$tag]($server/$GH_REPO/releases/tag/$tag)" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+      return 0
+    fi
+    [ "$attempt" = 3 ] && break
+    echo "::warning::Publishing $tag failed (attempt $attempt of 3); trying again in a minute."
+    sleep 60
+  done
+  echo "::error::Publishing $tag failed three times."
+  return 1
+}
+
+case $1 in
+  nightly)
+    [ $# = 3 ] || { sed -n 's/^#   //p' "$0" >&2; exit 2; }
+    sha=$2 dir=$3
+    epoch=$(git show -s --format=%ct "$sha")
+    version=$(date -u -d "@$epoch" +%Y%m%d.%H%M%S)
+    # Two commits can land in the same minute, as merges in a row do, and
+    # their nightlies can run at once. The tag is created first, which
+    # GitHub does for one caller only, so it belongs to this commit before
+    # the release is made on it. A stamp another commit holds moves on a
+    # minute; one this commit holds is its own from an earlier run. Every
+    # commit CI passes is released, and a re-run still finds its tag.
+    stamp=""
+    for _ in $(seq 60); do
+      try=$(date -u -d "@$epoch" +%Y%m%dT%H%M)
+      if gh api "repos/$GH_REPO/git/refs" -f "ref=refs/tags/nightly-$try" -f "sha=$sha" > /dev/null 2>&1; then
+        stamp=$try
+        break
+      fi
+      # Not created: either the tag exists, or creating tags is refused.
+      if ! held=$(gh api "repos/$GH_REPO/commits/nightly-$try" --jq .sha 2>/dev/null); then
+        echo "::error::Could not create the tag nightly-$try; a tag ruleset may refuse it to Actions."
+        exit 1
+      fi
+      if [ "$held" = "$sha" ]; then
+        stamp=$try
+        break
+      fi
+      epoch=$((epoch + 60))
+    done
+    if [ -z "$stamp" ]; then
+      echo "::error::No nightly tag in the hour after $sha's time was free."
+      exit 1
+    fi
+    rm -f "$dir/SHA256SUMS"
+    ( cd "$dir" && sha256sum -- * > "$work/SHA256SUMS" ) && mv "$work/SHA256SUMS" "$dir/"
+    notes="Built from $sha, version \`$version\`, after CI passed on it.
+
+\`SHA256SUMS\` lists every file here: \`sha256sum --check SHA256SUMS\`."
+    publish "nightly-$stamp" "$sha" "$project nightly $version$(release_name)" "$notes" "$dir"
+    ;;
+
+  cadences)
+    gh release list --limit 100000 --exclude-drafts \
+      --json tagName,publishedAt --jq '.[] | "\(.tagName) \(.publishedAt)"' > "$work/releases"
+    # The stamp sorts by time, whatever order the API lists them in.
+    nightly=$(awk '$1 ~ /^nightly-[0-9]{8}T[0-9]{4}$/ { print $1 }' "$work/releases" | sort | tail -n 1)
+    if [ -z "$nightly" ]; then
+      echo "::notice::There is no nightly to release yet."
+      exit 0
+    fi
+    stamp=${nightly#nightly-}
+    read -r sha date < <(gh api "repos/$GH_REPO/commits/$nightly" --jq '"\(.sha) \(.commit.committer.date)"')
+    version=$(date -u -d "$date" +%Y%m%d.%H%M%S)
+    gh release download "$nightly" --dir "$work/files"
+    failed=0
+    for cadence in weekly monthly yearly; do
+      case $cadence in
+        weekly) period=+%G-W%V ;;
+        monthly) period=+%Y-%m ;;
+        yearly) period=+%Y ;;
+      esac
+      now=$(date -u "$period")
+      newest=$(awk -v c="$cadence" '$1 ~ ("^" c "-[0-9]{8}T[0-9]{4}$") { print $2 }' "$work/releases" | sort | tail -n 1)
+      if [ -n "$newest" ] && [ "$(date -u -d "$newest" "$period")" = "$now" ]; then
+        echo "$cadence: released in $now already."
+        continue
+      fi
+      if grep -qx "$cadence-$stamp" <(cut -d' ' -f1 "$work/releases"); then
+        echo "$cadence: $nightly is the newest nightly and was released as $cadence-$stamp already."
+        continue
+      fi
+      echo "$cadence: due for $now; releasing $nightly."
+      notes="The $cadence release of [$nightly]($server/$GH_REPO/releases/tag/$nightly): commit $sha and the same files.
+
+\`SHA256SUMS\` lists every file here: \`sha256sum --check SHA256SUMS\`."
+      publish "$cadence-$stamp" "$sha" "$project $cadence $version$(release_name)" "$notes" "$work/files" || failed=1
+    done
+    exit "$failed"
+    ;;
+
+  *)
+    sed -n 's/^#   //p' "$0" >&2
+    exit 2
+    ;;
+esac

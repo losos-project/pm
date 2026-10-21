@@ -356,3 +356,22 @@ and keep build-only pkg-config prefix rewrites out of the final image. Service
 activation, sysusers, presets, architecture-aware image manifests and transactional
 system updates remain the distribution's responsibility. These interfaces do not
 make `pm run` a replacement for systemd service management.
+
+## Releases
+
+Every push to `master` that passes `ci` is published as a GitHub prerelease,
+`nightly-<YYYYMMDD>T<HHMM>` after the commit's time in UTC, with pm's
+x86_64 binaries named for its version and a `SHA256SUMS`. Every day at 02:17
+UTC `release.yml` also cuts a `weekly-`, `monthly-` or `yearly-` release from
+the newest nightly when that cadence has none yet this ISO week, month or
+year: the same commit and files under the cadence's tag. Only a yearly release
+becomes GitHub's latest. These are the cadences the OS releases on ([Release
+cadences](https://github.com/losos-project/desktop/blob/main/docs/releases.md#release-cadences)),
+and a tag is the version to pin pm at. Each release is named with an
+adjective and a verb that share a letter, from Oxford's word lists, and none
+is edited once published (`.github/release`). A `v*` tag pushed by hand is
+still released under its own name.
+
+`lockfiles.yml` moves every lockfile to what its manifest allows each Monday
+at 03:00 UTC, in one commit pushed straight to the default branch, where
+CI checks it as any other push.
