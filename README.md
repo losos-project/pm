@@ -194,7 +194,8 @@ Each `--installer` is a CD, installed once and shared like a template; the
 machine boots its disk first and the first CD while the disk has nothing to
 boot, so the installer runs once and the system it installed starts after. It
 has a screen, for the installer and for a system that cannot send its windows
-to the desktop, which a SPICE viewer shows. `--system`
+to the desktop, which a SPICE viewer shows, with a channel for the SPICE agent
+so the guest shares the desktop's clipboard through the viewer. `--system`
 (linux, the default, or windows) also gives it the host's CD of tools for that
 system, the first `pm/machines/<system>-tools.iso` under `$XDG_DATA_DIRS`, or
 the one `--tools` names: what a host puts there is what fits a guest to its
