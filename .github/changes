@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Whether a run needs the jobs that build and test the code, from the paths
+# the change touches. The organisation's Actions runners are shared by every
+# repository in it, so a pull request that only edits text or another
+# workflow should not hold a dozen of them for a build it cannot change.
+#
+#   .github/changes WORKFLOW >> "$GITHUB_OUTPUT"
+#
+# WORKFLOW is the calling workflow's own file, whose change runs everything.
+# A pull request is compared with the base it merges into (its checkout is
+# the merge, whose first parent is that base), a push with the commit the
+# branch was at before it (BEFORE). Any other event, or a push whose earlier
+# commit is not in the history, runs everything. Needs the checkout's whole
+# history.
+#
+# Prints `code=true|false`, and `deps=true|false`: whether the dependencies
+# changed, which on a pull request is what a security audit can find new.
+# Any other event audits every time, since advisories arrive on their own.
+# A path not named below is code.
+set -euo pipefail
+
+[ $# = 1 ] || { sed -n 's/^#   //p' "$0" >&2; exit 2; }
+workflow=$1
+
+case ${EVENT:-} in
+  pull_request) base=HEAD^1 ;;
+  push) base=${BEFORE:-} ;;
+  *) base= ;;
+esac
+
+if [ -z "$base" ] || ! git rev-parse -q --verify "$base^{commit}" > /dev/null; then
+  echo "changes: no diff to read, so everything runs" >&2
+  echo "code=true"
+  echo "deps=true"
+  exit 0
+fi
+
+code=false
+deps=false
+[ "$EVENT" = pull_request ] || deps=true
+while IFS= read -r path; do
+  case $path in
+    "$workflow" | .github/changes) code=true deps=true ;;
+    # Text for people and the other workflows and their scripts, none of
+    # which a build or test here reads.
+    .github/* | docs/* | README.md | CODE_OF_CONDUCT.md | CONTRIBUTING.md | SECURITY.md | LICENSE | .gitignore) ;;
+    *) code=true ;;
+  esac
+  case $path in
+    Cargo.lock | */Cargo.lock | Cargo.toml | */Cargo.toml) deps=true ;;
+  esac
+  echo "changes: $path" >&2
+done < <(git diff --name-only "$base" HEAD)
+
+echo "changes: code=$code deps=$deps" >&2
+echo "code=$code"
+echo "deps=$deps"
