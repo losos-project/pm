@@ -68,7 +68,9 @@ minreq = { version = "3.0.0", features = ["https-rustls"] }
 nix = { version = "0.31.3", features = ["fs", "mount", "process", "ptrace", "poll", "reboot", "signal", "term"] }
 nom = "8.0.0"
 rayon = "1.12.0"
-rhai = { version = "1.26.1", features = ["grain", "internals", "metadata", "no_custom_syntax", "no_float", "no_time", "only_i64", "serde"] }
+# 1.27 calls a named function given to `Array::map` with (item, index) and no
+# longer falls back to one argument, so `.map(helper)` in build files fails.
+rhai = { version = "~1.26.1", features = ["grain", "internals", "metadata", "no_custom_syntax", "no_float", "no_time", "only_i64", "serde"] }
 ring = "0.17.14"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
