@@ -452,11 +452,16 @@ fn domain_xml(
         (
             "
     <!-- The screen, shown by a viewer that attaches through libvirt, and never
-         on a port. No SPICE agent channel: the host's clipboard is not the
-         guest's to read. -->
+         on a port. -->
     <graphics type='spice'>
       <listen type='none'/>
     </graphics>
+    <!-- The SPICE agent's channel: the desktop's one clipboard reaches the
+         guest through the viewer, as it reaches every other window, while
+         the viewer has the keyboard. The guest tools install the agent. -->
+    <channel type='spicevmc'>
+      <target type='virtio' name='com.redhat.spice.0'/>
+    </channel>
     <video>
       <model type='virtio' heads='1' primary='yes'/>
     </video>
@@ -902,18 +907,13 @@ mod tests {
             "<input type='tablet' bus='usb'/>",
             "<controller type='usb' model='qemu-xhci'/>",
             "name='org.qemu.guest_agent.0'",
+            // The clipboard, through the viewer.
+            "<channel type='spicevmc'>\n      <target type='virtio' name='com.redhat.spice.0'/>",
         ] {
             assert!(xml.contains(expected), "{expected} in\n{xml}");
         }
-        // No vsock, nothing to share the host's clipboard with, and nothing on a
-        // port.
-        for absent in [
-            "<vsock",
-            "spicevmc",
-            "vdagent",
-            "autoport",
-            "type='address'",
-        ] {
+        // No vsock and nothing on a port.
+        for absent in ["<vsock", "autoport", "type='address'"] {
             assert!(!xml.contains(absent), "{absent} in\n{xml}");
         }
         for comment in xml.split("<!--").skip(1) {
