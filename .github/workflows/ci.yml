@@ -10,7 +10,8 @@ on:
 # ── What this gates, and what it deliberately does not ─────────────────────
 #
 # Three jobs: rustfmt + clippy, the default test suite, and the confined tests
-# the default suite skips.
+# the default suite skips. A fourth, `changes`, runs first and skips all three
+# for a change that cannot affect the code.
 #
 # Every job builds pm, and building pm builds its bundled WebAssembly plugins and
 # integration-test fixtures (build.rs), so every toolchain step adds both wasm targets.
@@ -49,8 +50,27 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  # Whether the change can affect the code (.github/changes): one that only
+  # edits text or another workflow skips the three jobs below, which a
+  # required check reads as passed. If this job fails, they run anyway.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.changes.outputs.code }}
+    steps:
+      - uses: actions/checkout@v7
+        with: { fetch-depth: 0 }
+      - id: changes
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: .github/changes .github/workflows/ci.yml >> "$GITHUB_OUTPUT"
+
   lint:
     name: "rustfmt + clippy"
+    needs: [changes]
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -98,6 +118,8 @@ jobs:
 
   test:
     name: "test suite"
+    needs: [changes]
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -146,6 +168,8 @@ jobs:
 
   sandbox:
     name: "confined tests (userns + landlock)"
+    needs: [changes]
+    if: ${{ !cancelled() && needs.changes.outputs.code != 'false' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # The seven tests the default suite skips. tests/sandbox.rs marks four of
