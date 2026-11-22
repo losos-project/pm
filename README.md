@@ -103,6 +103,41 @@ support will be removed in a future release.
 * The old file is left in place. Delete it, and its `.sig`, once the `.rhai`
   file is signed and builds.
 
+## Building a package
+
+`pm build build.rhai` reads the recipe, matches every step command against the
+built-in fingerprint table to derive the sandbox policy, and builds the package
+in that jail. A command that matches nothing aborts the build before anything
+runs. Use `pm explain` to see that policy, and `--permissive` to build anyway.
+
+The finished archive is `<name>-<version>.cpkg` in the current working
+directory, for example `hello-1.0.0.cpkg`. Dependencies in the graph are built
+first, several at a time, and bundled as nested archives.
+
+```sh
+pm build build.rhai
+pm explain build.rhai
+pm build build.rhai --permissive
+pm build build.rhai -j1
+```
+
+`-j N` / `--jobs N` is how many packages to build at once, and defaults to the
+core count. `-j1` builds them one after another, which is the first thing to
+reach for when a build fails only under concurrency.
+
+`--unsandboxed` runs the build steps on the host instead of inside the sandbox,
+for debugging a build the jail breaks. The recipe then runs with your full
+privileges and can read your home directory, so only use it on a build file you
+wrote yourself.
+
+`-v` / `--verbose` logs every step and lets build commands write to the
+terminal directly, turning off the live progress display. It is accepted
+wherever it appears. `--no-plugins` loads none of the installed plugins,
+`--plugin-dir DIR` loads them from that directory instead of
+`<config>/pm/plugins`, and `--allow-unsigned-plugins` loads them without
+verifying their signatures, which is for developing a plugin you have not
+signed yet.
+
 ## Shipping a kernel
 
 A package can ship its own Linux kernel. Install the image into `DESTDIR` with
@@ -157,6 +192,73 @@ running it in the namespace jail on the host's kernel:
 
 Install `pm-vm-init` beside `pm`: it is copied into every initramfs, and is
 much smaller than `pm`, which is used in its place when it is missing.
+
+## Permission profiles
+
+A package carries a permission profile inferred at build time from its source,
+its ELF headers and a traced run. A fresh profile is only ever in audit mode:
+it describes what the package was *seen* to need, not what it can need, which
+is why reading this report is how you decide whether `pm promote` would be
+safe.
+
+`pm profile hello-1.0.0.cpkg` lists every grant, where it was inferred from,
+the evidence behind it, and whether the profile is enforced or merely audited.
+The signature is checked first, against the trust store under
+`$XDG_CONFIG_HOME/pm/trusted` (or `$HOME/.config/pm/trusted`). `--unsigned`
+skips that check: the profile is data from inside the archive, so an
+unverified one says only what its author wants it to say. `--trust-dir DIR`
+uses a different store.
+
+```sh
+pm profile hello-1.0.0.cpkg
+pm run --audit hello-1.0.0.cpkg
+pm run --enforce hello-1.0.0.cpkg
+pm promote hello-1.0.0.cpkg
+```
+
+`pm run --audit` replaces the jailed run with a traced one that reports what
+enforcing the profile would have broken, and denies nothing. The audited run
+is not jailed: the program runs with your own privileges, so audit only a
+package you were already willing to run. `pm run --enforce` attaches the
+landlock ruleset for a single run without rewriting the archive.
+
+`pm promote` is the only command that moves a profile from audit to
+enforcing. Once promoted, landlock denies every path outside the profile, and
+the package stops working the first time it takes one. This rewrites the
+`metadata` member inside the archive, so every byte the old signature covered
+has changed and that signature is void. It is replaced with a fresh one by
+default (a signing key is generated and trusted locally on first use, as with
+`pm sign`). `--no-sign` keeps your key out of it and renames the dead
+`<PACKAGE>.sig` to `<PACKAGE>.sig.stale`; run `pm sign` next. `--unsigned`
+allows promoting a package that carries no valid signature: without it, a
+package that has a signature must pass verification and a package with none is
+refused. `--key PATH` picks a signing key other than the one under your
+config directory, and `--trust-dir DIR` is the store used to verify the old
+signature and trust a new key. A package whose profile is already enforced is
+left alone, archive and signature included.
+
+## Signing and trust
+
+Build files and packages are signed with an Ed25519 key. `pm sign FILE`
+writes a detached `<FILE>.sig` next to it, so a package travels as two files.
+On first use it generates your signing key at
+`$XDG_CONFIG_HOME/pm/signing.key` (or `$HOME/.config/pm/signing.key`) and
+trusts it locally, otherwise you could not verify your own work. The paths
+and the public key are printed so the key can be copied to whoever has to
+verify the result. `--key PATH` and `--trust-dir DIR` override those
+locations.
+
+`pm keygen` creates the signing key without signing anything. It refuses to
+overwrite an existing key: a lost signing key cannot be recovered, and
+everything signed with it has to be signed again under a key nobody trusts
+yet. `-f` / `--force` destroys the existing key and puts a new one in its
+place. `--key PATH` and `--trust-dir DIR` override the default locations.
+The key path and public key are printed.
+
+`pm trust PUBKEY_HEX|FILE` accepts signatures made by a public key from now
+on. The argument is the key as hex, or the path to a file holding it: a
+`.pub` from the trust store, or any `.sig`, whose signer is then trusted.
+A key already in the store is left alone. `--trust-dir DIR` picks the store.
 
 ## Machines
 
@@ -357,6 +459,30 @@ and keep build-only pkg-config prefix rewrites out of the final image. Service
 activation, sysusers, presets, architecture-aware image manifests and transactional
 system updates remain the distribution's responsibility. These interfaces do not
 make `pm run` a replacement for systemd service management.
+
+## Building and installing
+
+pm is a Cargo workspace. `Cargo.toml` sets `edition = "2024"`, so a current
+stable Rust is required. Building also needs the `wasm32-unknown-unknown` and
+`wasm32-wasip2` targets and clang: `build.rs` compiles the bundled plugins and
+test fixtures under `plugins/` to WebAssembly, and the tree-sitter grammars
+are C.
+
+```sh
+rustup update stable
+rustup target add wasm32-unknown-unknown wasm32-wasip2
+# clang is also required (for example `sudo apt install clang` on Debian)
+cargo build --release --locked --all-features
+cargo test --workspace
+```
+
+That produces `pm`, `pm-lsp`, `pm-trace`, `pm-vm-init` and `pmd` under
+`target/release/`. Put them on `PATH`. Install `pm-vm-init` beside `pm`: it is
+copied into every package-kernel initramfs, and is much smaller than `pm`,
+which is used in its place when it is missing.
+
+Nightly, weekly, monthly and yearly x86_64 binaries are also published as
+GitHub releases, below.
 
 ## Releases
 
